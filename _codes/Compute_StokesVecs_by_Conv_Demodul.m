@@ -2,7 +2,6 @@
 % Convolution - Demodulation Schemes Applied
 
 function [S0,S1,S2] = Compute_StokesVecs_by_Conv_Demodul(im,kernel_type)
-%%
 
 [rows,cols] = size(im);
 
@@ -50,9 +49,14 @@ switch kernel_type
         I90 = double(I90_frame);
         I135 = double(I135_frame);
 
-end
-S0 = (I0 + I90 + I45 + I135)/2;
-S1 = (I0 - I90)./(I0 + I90);
-S2 = (I45 - I135)./(I45 + I135);
-S2 = inpaint_nans(S2);
+        S0 = (I0 + I90 + I45 + I135)/2;
+        S1 = (I0 - I90)./(I0 + I90);
+        S2 = (I45 - I135)./(I45 + I135);
 
+        S0 = inpaint_nans(S0);
+        S1 = inpaint_nans(S1);
+        S2 = inpaint_nans(S2);
+
+        S1 = S1(1:2:size(S1,1),1:2:size(S1,2));
+        S2 = S2(1:2:size(S2,1),1:2:size(S2,2));
+end
