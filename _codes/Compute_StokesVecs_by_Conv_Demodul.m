@@ -1,6 +1,6 @@
 % Feed in one raw Pyxis frame; obtain Stokes parameters
 % Convolution - Demodulation Schemes Applied
-
+% Ratliff et al., 2009 
 function [S0,S1,S2] = Compute_StokesVecs_by_Conv_Demodul(im,kernel_type)
 
 [rows,cols] = size(im);
