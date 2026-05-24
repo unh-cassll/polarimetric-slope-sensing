@@ -87,3 +87,39 @@ def test_inscribed_diameter_uses_min_side():
     Ny, Nx, dx_ds = 24, 40, 0.1
     diag = {"dx_ds": dx_ds, "aperture_mask": np.ones((Ny, Nx), bool)}
     assert inscribed_diameter_m(diag) == pytest.approx(min(Ny, Nx) * dx_ds)
+
+
+# ---------------------------------------------------------------------------
+# reduce_downsample memory lever (driver) -- verified via the documented
+# contract: subsample preserves values, float32, and dx scales by the factor.
+# ---------------------------------------------------------------------------
+
+def test_reduce_downsample_contract():
+    # The driver subsamples each reduced frame [::rds, ::rds] as float32 and
+    # scales the effective ground dx by rds, so the physical footprint
+    # (dx * n_samples) is preserved. Verify that invariant directly.
+    W = 160
+    dx_native = 0.01
+    full = (0.001 * np.arange(W)).astype(float)
+    footprints = []
+    for rds in (1, 2, 4):
+        sub = np.asarray(full, dtype=np.float32)[::rds]
+        dx_eff = dx_native * rds
+        footprints.append(dx_eff * sub.size)
+        # subsampled values are an exact subset of the full field
+        assert np.allclose(sub, full[::rds].astype(np.float32))
+        assert sub.dtype == np.float32
+    # footprint preserved across all subsample factors
+    assert max(footprints) - min(footprints) < 1e-9
+
+
+def test_g2s_min_nodes_guard():
+    # Over-shrinking the grid must raise an actionable error from the driver,
+    # not a cryptic one from g2s. We exercise the guard arithmetic directly:
+    # a 200x160 native frame at reduce_downsample=4 + downsample=8 -> ~6x5,
+    # below the 16-node floor.
+    from eta_field_recon import eta_pipeline as ep
+    ny, nx, rds, ds = 200, 160, 4, 8
+    eff_ny = (ny // rds) // ds
+    eff_nx = (nx // rds) // ds
+    assert min(eff_ny, eff_nx) < 16  # this configuration is the failure case

@@ -15,7 +15,10 @@ Pipeline
      meaningless there.
   2. Reduce every frame to a slope field with `pss` and orthorectify the
      stack onto a uniform ground grid -- ONCE -- via
-     reconstruct_eta_from_record(..., return_slopes=True).
+     reconstruct_eta_from_record(..., return_slopes=True). Each frame is
+     subsampled (reduce_downsample, default 4) as float32 BEFORE stacking, so
+     the peak memory stays near ~2 GB rather than the tens of GB a full native
+     stack would need (which OOMs a 32 GB machine during orthorectification).
   3. For three centered circular apertures -- full frame, 0.5x, and 0.25x of
      the inscribed-circle diameter (min(frame width, height)) -- re-run only
      the (cheap) CWT-based long-wave inversion via reconstruct_eta_field with
@@ -126,6 +129,13 @@ def main(argv=None) -> int:
                    help="which Zenodo stack to reduce (default: full 60 s)")
     p.add_argument("--downsample", type=int, default=8,
                    help="output-grid subsample factor (default: 8)")
+    p.add_argument("--reduce-downsample", type=int, default=4,
+                   help="subsample each frame at reduce time, before stacking "
+                        "(default: 4). This is the MEMORY lever: the full "
+                        "native slope stack for the 60 s record is ~18-36 GB, "
+                        "which OOMs a 32 GB machine during orthorectification. "
+                        "4 keeps the peak near ~2 GB. Use 2 for finer spatial "
+                        "resolution if you have >=32 GB free, 1 for full native.")
     p.add_argument("--nperseg", type=int, default=256,
                    help="Welch segment length in samples (default: 256)")
     p.add_argument("--out", default="spectra_vs_aperture.png",
@@ -168,6 +178,7 @@ def main(argv=None) -> int:
         orthorectify=True,
         gain_reference_path=median_path,
         downsample=args.downsample,
+        reduce_downsample=args.reduce_downsample,
         return_slopes=True,
         verbose=True,
     )

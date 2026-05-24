@@ -127,6 +127,7 @@ def reconstruct_eta_from_record(
     method: str = "conv_demodulation",
     gain_mode: str | None = None,
     gain_reference_path: str | Path | None = None,
+    reduce_downsample: int = 1,
     # reconstruct_eta_field windowing passthrough
     spatial_alpha: float = 0.1,
     spatial_pad_frac: float = 0.10,
@@ -177,6 +178,24 @@ def reconstruct_eta_from_record(
             recommended mode. If a gain_reference_path is given (the
             temporal-median background frame), it is read once and reused as
             the empirical-gain reference for every frame.
+        reduce_downsample : spatial subsample factor applied to each slope
+            field AT REDUCE TIME, before the stack is accumulated and (if
+            requested) orthorectified. Default 1 (no early subsample). This is
+            the memory lever: a full native-resolution slope stack for a long
+            high-resolution record can be tens of GB, and orthorectification
+            transiently doubles that. Subsampling here, as float32, shrinks
+            the peak footprint by reduce_downsample**2. Crucially, the sensor
+            pixel pitch handed to the orthorectifier is scaled by the same
+            factor, so the derived ground dx -- and therefore every physical
+            length and the spectrum's frequency axis -- stays correct (a
+            subsample WITHOUT this scaling would silently shrink the footprint
+            by reduce_downsample and corrupt the result). This is independent
+            of `downsample` below, which subsamples the (already small) stack
+            again inside reconstruct_eta_field; the effective output grid is
+            coarsened by reduce_downsample * downsample. For a spatial-mean
+            long-wave spectrum the fidelity cost of an early subsample is
+            negligible (the slope is spatially averaged over the aperture
+            anyway); for full-resolution eta_short, keep reduce_downsample=1.
         spatial_alpha, spatial_pad_frac, temporal_window, temporal_alpha :
             forwarded to `reconstruct_eta_field`.
         aperture_diameter_m : diameter (m) of the centered circular aperture
@@ -345,18 +364,37 @@ def reconstruct_eta_from_record(
     if verbose:
         print(f"  reducing {n_frames} frame(s) with pss ...")
 
-    res0 = _reduce(frame0)
-    Ny, Nx = res0.Sx.shape
-    slope_x = np.empty((n_frames, Ny, Nx), dtype=float)
-    slope_y = np.empty((n_frames, Ny, Nx), dtype=float)
-    slope_x[0] = res0.Sx
-    slope_y[0] = res0.Sy
+    rds = int(reduce_downsample)
+    if rds < 1:
+        raise ValueError(f"reduce_downsample must be >= 1; got {reduce_downsample!r}")
+
+    def _reduce_sub(frame):
+        """Reduce one frame and subsample it (float32) before stacking."""
+        res = _reduce(frame)
+        sx = np.asarray(res.Sx, dtype=np.float32)[::rds, ::rds]
+        sy = np.asarray(res.Sy, dtype=np.float32)[::rds, ::rds]
+        return sx, sy
+
+    sx0, sy0 = _reduce_sub(frame0)
+    Ny, Nx = sx0.shape
+    # float32 stack: halves memory vs float64 and is ample precision for a
+    # spatially-averaged long-wave slope spectrum.
+    slope_x = np.empty((n_frames, Ny, Nx), dtype=np.float32)
+    slope_y = np.empty((n_frames, Ny, Nx), dtype=np.float32)
+    slope_x[0] = sx0
+    slope_y[0] = sy0
 
     for ti in range(1, n_frames):
         frame_i, _ = read_netcdf_frame(path, time_index=ti)
-        res_i = _reduce(frame_i)
-        slope_x[ti] = res_i.Sx
-        slope_y[ti] = res_i.Sy
+        sx_i, sy_i = _reduce_sub(frame_i)
+        slope_x[ti] = sx_i
+        slope_y[ti] = sy_i
+
+    # The sensor pixel pitch corresponds to the NATIVE grid; after an early
+    # subsample by rds the effective ground pitch is rds x larger. Scale it so
+    # orthorectify_static derives the correct ground dx (a subsample without
+    # this scaling would shrink the footprint by rds and corrupt all lengths).
+    ortho_pitch_m = ortho_geom["pitch_m"] * rds if orthorectify else None
 
     # ------------------------------------------------------------------
     # Static orthorectification (optional): project the slope stack onto a
@@ -372,7 +410,7 @@ def reconstruct_eta_from_record(
             freeboard_m=ortho_geom["freeboard_m"],
             theta_i_mean_deg=ortho_geom["theta_i_mean_deg"],
             focal_length_m=ortho_geom["focal_length_m"],
-            pixel_pitch_m=ortho_geom["pitch_m"],
+            pixel_pitch_m=ortho_pitch_m,
             camera_azimuth_deg=ortho_geom["azimuth_deg"],
             verbose=verbose,
         )
@@ -381,6 +419,32 @@ def reconstruct_eta_from_record(
         slope_x = np.nan_to_num(ortho_result.slope_x, nan=0.0)
         slope_y = np.nan_to_num(ortho_result.slope_y, nan=0.0)
         ground_dx_m = ortho_result.dx_m
+    elif rds > 1:
+        # No orthorectification: the caller-supplied ground_dx_m describes the
+        # native grid, so an early subsample by rds makes each retained sample
+        # span rds x the ground distance.
+        ground_dx_m = ground_dx_m * rds
+
+    if verbose and rds > 1:
+        print(f"  reduce_downsample={rds}: slope stack {slope_x.shape} "
+              f"(float32), ground dx scaled x{rds} -> {ground_dx_m*1000:.3f} mm")
+
+    # Guard: reconstruct_eta_field will further subsample by `downsample`, then
+    # the per-frame g2s integration needs the (downsampled) grid to exceed its
+    # finite-difference stencil. The effective output grid is the post-reduce
+    # stack shrunk by `downsample`; if that drops below a safe minimum, fail
+    # here with an actionable message rather than deep inside g2s.
+    G2S_MIN_NODES = 16
+    eff_ny = slope_x.shape[1] // max(downsample, 1)
+    eff_nx = slope_x.shape[2] // max(downsample, 1)
+    if min(eff_ny, eff_nx) < G2S_MIN_NODES:
+        raise ValueError(
+            f"reduce_downsample={rds} x downsample={downsample} shrinks the "
+            f"output grid to {eff_ny}x{eff_nx}, below the ~{G2S_MIN_NODES}-node "
+            f"minimum the g2s surface integration needs. Lower reduce_downsample "
+            f"or downsample (their product sets the coarsening), or use a "
+            f"higher-resolution record."
+        )
 
     # ------------------------------------------------------------------
     # Reconstruct. Pass the gate decision through as long_wave=.
