@@ -209,10 +209,19 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         # with the sign of sin_th recovered from sign(Re(Wsy*conj(Wsx))).
         # This avoids the 180-deg slope-only ambiguity by using the relative
         # phase between Wsy and Wsx.
+        #
+        # Guard: np.sign(0) == 0, which would ZERO sin_th whenever Wsx (or the
+        # relative phase) vanishes -- e.g. a wave travelling exactly along the
+        # along-look axis, where Wsx == 0. That incorrectly annihilates the
+        # signal. When the relative phase is indeterminate there is simply no
+        # information to flip the sign, so we default it to +1 (keep the
+        # magnitude) rather than 0 (destroy it).
         eps = 1e-30
         mag = np.sqrt(np.abs(Wsx)**2 + np.abs(Wsy)**2) + eps
+        rel_sign = np.sign(np.real(Wsy * np.conj(Wsx)))
+        rel_sign = np.where(rel_sign == 0, 1.0, rel_sign)
         cos_th = np.abs(Wsx) / mag
-        sin_th = (np.abs(Wsy) / mag) * np.sign(np.real(Wsy * np.conj(Wsx)))
+        sin_th = (np.abs(Wsy) / mag) * rel_sign
 
         W_eta = 1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
         W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)

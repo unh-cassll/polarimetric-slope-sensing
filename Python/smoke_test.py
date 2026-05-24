@@ -92,7 +92,10 @@ for m in methods:
         assert np.isfinite(r.s1).all() and np.isfinite(r.s2).all(), "non-finite s1/s2"
         assert np.isfinite(r.dolp).all(), "non-finite DoLP"
         assert np.isfinite(r.aoi_deg).all(), "non-finite AOI"
-        assert r.Sx.shape == frame.shape, "Sx shape mismatch"
+        # At the default resolution="native", one Stokes vector is produced per
+        # 2x2 super-pixel, so the slope field is H/2 x W/2 (not the input size).
+        assert r.Sx.shape == (frame.shape[0] // 2, frame.shape[1] // 2), \
+            "Sx shape mismatch (expected native H/2 x W/2)"
         med_dolp = np.nanmedian(r.dolp)
         med_aoi = np.nanmedian(r.aoi_deg)
         print(f"  gain={g:10s}  g1={r.g1 if False else r.gain_g1:.4f}  "

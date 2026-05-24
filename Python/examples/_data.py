@@ -205,8 +205,10 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
 
     eps = 1e-30
     mag = np.sqrt(np.abs(Wsx) ** 2 + np.abs(Wsy) ** 2) + eps
+    rel_sign = np.sign(np.real(Wsy * np.conj(Wsx)))
+    rel_sign = np.where(rel_sign == 0, 1.0, rel_sign)   # indeterminate phase -> +1
     cos_th = np.abs(Wsx) / mag
-    sin_th = (np.abs(Wsy) / mag) * np.sign(np.real(Wsy * np.conj(Wsx)))
+    sin_th = (np.abs(Wsy) / mag) * rel_sign
     W_eta = 1j * (cos_th * Wsx + sin_th * Wsy) / k[:, None]
     W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
     eta_long = _inverse_cwt(W_eta, freqs, fs, None)
