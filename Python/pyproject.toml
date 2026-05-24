@@ -90,6 +90,10 @@ pss = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Put the project root (this dir) on sys.path during tests so that
+# `from examples import _data` resolves regardless of how pytest is invoked
+# (examples/ is a data+helper dir, used by the data-dependent tests).
+pythonpath = ["."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

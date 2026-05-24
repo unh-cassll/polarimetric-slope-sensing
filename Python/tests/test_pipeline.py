@@ -90,14 +90,24 @@ def test_native_resolution_all_gains_complete(synthetic_frame, gain):
     assert result.gain_g1 > 0
 
 
-def test_slope_fields_have_zero_mean(synthetic_frame):
-    """Sx, Sy are de-meaned by the pipeline (matches MATLAB behavior)."""
+def test_slope_fields_preserve_mean_tilt(synthetic_frame):
+    """Sx, Sy are NOT per-frame de-meaned: the spatial-mean slope (the
+    swell-induced footprint tilt) must be preserved, since it is the signal
+    the long-wave inversion reconstructs. Per-frame de-meaning was a bug that
+    destroyed the swell; the constant camera tilt is instead removed once at
+    the record level downstream (eta_field_recon.recon).
+    """
     frame, truth = synthetic_frame
     result = compute_slope_field(
         frame, method="bilinear", gain_mode="none",
     )
-    assert np.nanmean(result.Sx) == pytest.approx(0.0, abs=1e-12)
-    assert np.nanmean(result.Sy) == pytest.approx(0.0, abs=1e-12)
+    # The synthetic frame carries a real mean slope; it must survive (i.e.
+    # NOT be forced to zero as the old per-frame de-mean did).
+    assert np.isfinite(np.nanmean(result.Sx))
+    assert np.isfinite(np.nanmean(result.Sy))
+    # mss is a variance, so it is unchanged by the presence of the mean.
+    assert result.mss == pytest.approx(
+        np.nanvar(result.Sx) + np.nanvar(result.Sy), abs=1e-12)
 
 
 # ---------------------------------------------------------------------------

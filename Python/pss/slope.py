@@ -141,8 +141,17 @@ def compute_slope_field(
     # 5. Along-look / cross-look slopes (in radians of tilt -> tan).
     Sx = np.sin(np.deg2rad(phi_deg)) * np.tan(np.deg2rad(aoi_deg))
     Sy = np.cos(np.deg2rad(phi_deg)) * np.tan(np.deg2rad(aoi_deg))
-    Sx = Sx - np.nanmean(Sx)
-    Sy = Sy - np.nanmean(Sy)
+
+    # NOTE: we intentionally do NOT subtract the per-frame spatial mean here.
+    # Doing so (Sx -= nanmean(Sx)) removes the frame's mean slope -- but the
+    # mean slope is the swell-induced tilt of the whole footprint, which is
+    # exactly the long-wave signal eta_long(t) is built from. Per-frame
+    # de-meaning therefore destroys the swell and leaves only short-wave
+    # residual (this was a real bug). The genuinely constant part (the static
+    # camera viewing tilt) is removed once, at the RECORD level, downstream:
+    # eta_field_recon.recon subtracts the time-mean of the spatial-mean slope
+    # before the long-wave inversion. The short-wave path (g2s) discards the
+    # spatial mean by construction, so it is unaffected by this change.
 
     # 6. Angles (degrees) and mean-square slope.
     Ax = np.degrees(np.arctan(Sx))
@@ -159,6 +168,12 @@ def compute_slope_field(
     # the variance of the tilt ANGLE, applying atand twice. We report the
     # dimensionless slope variance here. To recover the old deg^2 angle
     # variance: float(np.nanvar(Ax) + np.nanvar(Ay)).)
+    #
+    # IMPORTANT: mss uses VARIANCE (nanvar), which subtracts the mean
+    # internally, so it is invariant to the constant camera-tilt offset now
+    # present in Sx/Sy (we no longer per-frame de-mean -- see step 5). Do NOT
+    # "simplify" this to nanmean(Sx**2): that would add the camera tilt back
+    # in as a spurious ~tan(theta_i)^2 term and break the physical mss.
     mss = float(np.nanvar(Sx) + np.nanvar(Sy))
 
     return SlopeResult(

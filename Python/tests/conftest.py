@@ -20,11 +20,21 @@ from pss.stokes import _OFFSETS
 
 
 def _data_module():
-    """Import examples/_data.py regardless of how pytest is invoked."""
-    repo = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(repo / "examples"))
-    import _data  # noqa: E402
-    return _data
+    """Import the examples/_data helper module.
+
+    Uses the same `from examples import _data` form as the test modules, which
+    resolves because pytest's `pythonpath = ["."]` (see pyproject.toml) puts
+    the project root on sys.path. Falls back to a direct path insert if run
+    in some other way.
+    """
+    try:
+        from examples import _data
+        return _data
+    except ModuleNotFoundError:
+        repo = Path(__file__).resolve().parent.parent
+        sys.path.insert(0, str(repo))
+        from examples import _data
+        return _data
 
 
 def _resolve_local_or_skip(getter_name: str) -> Path:

@@ -429,3 +429,42 @@ def test_run_epss_single_frame_promoted_to_stack():
     assert frame.ndim == 2
     r = run_epss(frame, verbose=False)
     assert r.slope_x.shape[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression guard: a uniform swell tilt must survive to eta_long.
+# This is the test that would have caught the per-frame de-mean bug, where
+# pss.compute_slope_field subtracted each frame's spatial-mean slope and so
+# destroyed the swell-induced footprint tilt before the long-wave inversion.
+# ---------------------------------------------------------------------------
+
+def test_uniform_swell_tilt_survives_to_eta_long():
+    """A spatially-uniform slope that oscillates in time at a swell frequency
+    represents a long wave tilting the whole footprint. Its amplitude must be
+    recovered in eta_long; if the spatial mean were stripped per frame, this
+    would collapse to ~zero.
+    """
+    fs = 10.0
+    T = 200                      # 20 s record -> clears the long-wave gate
+    Ny = Nx = 8
+    f0 = 0.15                    # swell band
+    g = 9.806
+    k0 = (2 * np.pi * f0) ** 2 / g       # deep-water k
+    A = 0.4                              # target elevation amplitude (m)
+    t = np.arange(T) / fs
+    # along-look slope of a wave travelling +y: spatially uniform per frame,
+    # oscillating in time with amplitude A*k0.
+    slope_t = A * k0 * np.sin(2 * np.pi * f0 * t)
+    sx = np.zeros((T, Ny, Nx))
+    sy = slope_t[:, None, None] * np.ones((T, Ny, Nx))
+
+    _, eta_long, _, _, diag = reconstruct_eta_field(
+        sx, sy, dx=0.05, fs=fs, water_depth_m=100.0,
+        downsample=2, long_wave=True, verbose=False)
+
+    assert diag["long_wave"] is True
+    # eta_long must carry real swell energy, not be collapsed to ~zero.
+    recovered_amp = eta_long.std() * np.sqrt(2)
+    assert recovered_amp > 0.5 * A, (
+        f"eta_long amplitude {recovered_amp:.3f} m collapsed vs target {A} m "
+        f"-- the spatial-mean (swell) tilt was lost.")
