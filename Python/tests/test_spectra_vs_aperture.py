@@ -1,0 +1,89 @@
+"""
+Tests for the pure helpers in tools/spectra_vs_aperture.py.
+
+These cover the spectrum estimator and the inscribed-diameter geometry without
+needing the Zenodo stack (which the full script downloads). The end-to-end
+reduction path is exercised manually against real data when run for real.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+# tools/ is not a package; add it to the path to import the script's helpers.
+_TOOLS = Path(__file__).resolve().parent.parent / "tools"
+sys.path.insert(0, str(_TOOLS))
+
+from spectra_vs_aperture import (  # noqa: E402
+    omnidirectional_spectrum,
+    inscribed_diameter_m,
+    APERTURE_FRACTIONS,
+)
+
+_trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
+
+
+def test_aperture_fractions_are_full_half_quarter():
+    assert APERTURE_FRACTIONS == (1.0, 0.5, 0.25)
+
+
+def test_spectrum_integral_equals_variance():
+    # Parseval: integral of the PSD over f equals the signal variance.
+    fs = 10.0
+    t = np.arange(0, 600.0, 1.0 / fs)
+    rng = np.random.RandomState(0)
+    eta = 0.4 * np.sin(2 * np.pi * 0.12 * t) + 0.05 * rng.randn(t.size)
+    f, S = omnidirectional_spectrum(eta, fs, nperseg=2048)
+    ratio = _trapz(S, f) / np.var(eta)
+    assert 0.95 < ratio < 1.05
+
+
+def test_spectrum_peaks_at_dominant_frequency():
+    fs = 10.0
+    t = np.arange(0, 300.0, 1.0 / fs)
+    f0 = 0.137
+    eta = np.sin(2 * np.pi * f0 * t)
+    f, S = omnidirectional_spectrum(eta, fs, nperseg=1024)
+    assert abs(f[np.argmax(S)] - f0) < 0.01
+
+
+def test_spectrum_units_are_psd():
+    # Doubling the sample rate (same physical signal) must not change S(f) at
+    # a given frequency by more than the windowing tolerance: PSD is a density.
+    t1 = np.arange(0, 300.0, 1 / 10.0)
+    t2 = np.arange(0, 300.0, 1 / 20.0)
+    e1 = np.sin(2 * np.pi * 0.1 * t1)
+    e2 = np.sin(2 * np.pi * 0.1 * t2)
+    f1, S1 = omnidirectional_spectrum(e1, 10.0, nperseg=512)
+    f2, S2 = omnidirectional_spectrum(e2, 20.0, nperseg=1024)
+    peak1 = S1[np.argmax(S1)]
+    peak2 = S2[np.argmax(S2)]
+    # peak densities should be comparable (within a factor of 2), not scaled
+    # by the sample-rate ratio
+    assert 0.5 < peak1 / peak2 < 2.0
+
+
+def test_spectrum_handles_nans():
+    fs = 10.0
+    t = np.arange(0, 100.0, 1 / fs)
+    eta = np.sin(2 * np.pi * 0.1 * t)
+    eta[::50] = np.nan   # sprinkle no-data
+    f, S = omnidirectional_spectrum(eta, fs, nperseg=256)
+    assert np.isfinite(S).all()
+
+
+def test_spectrum_too_short_raises():
+    with pytest.raises(ValueError, match="too short"):
+        omnidirectional_spectrum(np.zeros(4), 10.0)
+
+
+def test_inscribed_diameter_uses_min_side():
+    # Build a minimal diag like reconstruct_eta_field returns: a non-square
+    # mask and a known dx_ds. Inscribed diameter = min(Ny, Nx) * dx_ds.
+    Ny, Nx, dx_ds = 24, 40, 0.1
+    diag = {"dx_ds": dx_ds, "aperture_mask": np.ones((Ny, Nx), bool)}
+    assert inscribed_diameter_m(diag) == pytest.approx(min(Ny, Nx) * dx_ds)

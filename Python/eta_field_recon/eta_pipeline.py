@@ -89,6 +89,15 @@ class PipelineResult:
     gate_reason: str             # human-readable explanation of the decision
     orthorectified: bool = False # whether static orthorectification was applied
     ortho: Any = None            # OrthoResult when orthorectified, else None
+    # Optional passthrough of the reduced (and, if orthorectify=True,
+    # orthorectified) slope stack that was handed to reconstruct_eta_field.
+    # Populated only when reconstruct_eta_from_record(..., return_slopes=True).
+    # Lets a caller reduce a large record ONCE and then cheaply re-run the
+    # CWT-only eta step with different settings (e.g. several aperture
+    # diameters) without re-reading and re-reducing the whole stack.
+    slope_x: np.ndarray | None = None
+    slope_y: np.ndarray | None = None
+    slope_dx_m: float | None = None
 
 
 def _frame_count(path: str | Path) -> int:
@@ -124,6 +133,7 @@ def reconstruct_eta_from_record(
     temporal_window: str = "tukey",
     temporal_alpha: float = 0.25,
     aperture_diameter_m: float | None = None,
+    return_slopes: bool = False,
     verbose: bool = True,
 ) -> PipelineResult:
     """Reconstruct eta(x, y, t) from a multi-frame NetCDF DoFP record.
@@ -173,6 +183,13 @@ def reconstruct_eta_from_record(
             over which the spatial-mean slope is formed for the long-wave
             inversion; forwarded to `reconstruct_eta_field`. Default None
             (full frame).
+        return_slopes : if True, attach the reduced (and, when
+            orthorectify=True, orthorectified) slope stack and its ground dx
+            to the result as `slope_x`, `slope_y`, `slope_dx_m`. This lets a
+            caller reduce a large record ONCE and then cheaply re-run only the
+            CWT-based eta step (via `reconstruct_eta_field`) with different
+            settings -- e.g. several aperture diameters -- without re-reading
+            and re-reducing the whole stack. Default False.
         verbose : print progress.
 
     Returns:
@@ -399,4 +416,7 @@ def reconstruct_eta_from_record(
         gate_reason=gate_reason,
         orthorectified=orthorectify,
         ortho=ortho_result,
+        slope_x=slope_x if return_slopes else None,
+        slope_y=slope_y if return_slopes else None,
+        slope_dx_m=ground_dx_m if return_slopes else None,
     )
