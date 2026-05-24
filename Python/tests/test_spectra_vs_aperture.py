@@ -123,3 +123,37 @@ def test_g2s_min_nodes_guard():
     eff_ny = (ny // rds) // ds
     eff_nx = (nx // rds) // ds
     assert min(eff_ny, eff_nx) < 16  # this configuration is the failure case
+
+
+def test_eta_long_fast_path_matches_full_reconstruct():
+    # The tool computes eta_short ONCE and re-runs only the long-wave inversion
+    # per aperture. That fast path must be bit-identical to a full
+    # reconstruct_eta_field call with the same aperture.
+    from spectra_vs_aperture import _eta_long_for_aperture, inscribed_diameter_m
+    from eta_field_recon.recon import (reconstruct_eta_field,
+                                       _circular_aperture_mask)
+    rng = np.random.RandomState(0)
+    T, Ny, Nx, fs, dx = 256, 48, 56, 10.0, 0.05
+    t = np.arange(T) / fs
+    tilt = 0.02 * np.sin(2 * np.pi * 0.12 * t)
+    sx = np.broadcast_to(tilt[:, None, None], (T, Ny, Nx)).copy()
+    sx += 0.001 * rng.randn(T, Ny, Nx)
+    sy = 0.5 * sx
+
+    # full-frame reference + diag (downsample=1: grid == input)
+    _, eta_long_full, _, _, diag = reconstruct_eta_field(
+        sx, sy, dx=dx, fs=fs, downsample=1, aperture_diameter_m=None,
+        long_wave=True, verbose=False)
+    full_diam = inscribed_diameter_m(diag)
+    freqs = np.linspace(0.05, 2.0, 80)
+
+    for frac in (0.5, 0.25):
+        diam = frac * full_diam
+        # full reconstruct with this aperture
+        _, el_full, _, _, _ = reconstruct_eta_field(
+            sx, sy, dx=dx, fs=fs, downsample=1, aperture_diameter_m=diam,
+            long_wave=True, verbose=False)
+        # fast eta_long-only path
+        mask = _circular_aperture_mask(Ny, Nx, diag["dx_ds"], diam)
+        el_fast = _eta_long_for_aperture(sx, sy, fs, mask, freqs, 100.0)
+        assert np.array_equal(el_full, el_fast)

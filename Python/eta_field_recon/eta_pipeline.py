@@ -426,8 +426,17 @@ def reconstruct_eta_from_record(
         ground_dx_m = ground_dx_m * rds
 
     if verbose and rds > 1:
-        print(f"  reduce_downsample={rds}: slope stack {slope_x.shape} "
-              f"(float32), ground dx scaled x{rds} -> {ground_dx_m*1000:.3f} mm")
+        if orthorectify:
+            # On the ortho path the scaling happened UPSTREAM: pixel pitch was
+            # multiplied by rds before orthorectify_static, which then derived
+            # the correct ground dx directly. ground_dx_m already reflects it.
+            print(f"  reduce_downsample={rds}: slope stack {slope_x.shape} "
+                  f"(float32); sensor pitch was scaled x{rds} for ortho, "
+                  f"ground dx={ground_dx_m*1000:.3f} mm")
+        else:
+            print(f"  reduce_downsample={rds}: slope stack {slope_x.shape} "
+                  f"(float32), caller dx scaled x{rds} -> "
+                  f"{ground_dx_m*1000:.3f} mm")
 
     # Guard: reconstruct_eta_field will further subsample by `downsample`, then
     # the per-frame g2s integration needs the (downsampled) grid to exceed its

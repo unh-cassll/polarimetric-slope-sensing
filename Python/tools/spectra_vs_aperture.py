@@ -72,7 +72,15 @@ from scipy.signal import welch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from examples import _data  # noqa: E402
 from eta_field_recon.eta_pipeline import reconstruct_eta_from_record  # noqa: E402
-from eta_field_recon.recon import reconstruct_eta_field  # noqa: E402
+from eta_field_recon.recon import (  # noqa: E402
+    reconstruct_eta_field,
+    _aperture_spatial_mean,
+    _circular_aperture_mask,
+    _make_temporal_window,
+)
+from eta_field_recon.wavelet_core import (  # noqa: E402
+    _cwt, _inverse_cwt, lindisp_with_current, krogstad_eta_coeffs,
+)
 
 # np.trapz was removed in NumPy 2.x in favor of np.trapezoid; support both.
 _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
@@ -120,6 +128,40 @@ def inscribed_diameter_m(diag) -> float:
     dx_ds = float(diag["dx_ds"])
     Ny, Nx = diag["aperture_mask"].shape
     return dx_ds * min(Ny, Nx)
+
+
+def _eta_long_for_aperture(sx_ds, sy_ds, fs, aperture_mask, freqs_cwt,
+                           water_depth_m, mother=None):
+    """Long-wave elevation series eta_long(t) for one averaging aperture.
+
+    This is exactly the eta_long block of reconstruct_eta_field, factored out
+    so the (expensive, aperture-INDEPENDENT) per-frame g2s short-wave
+    integration is not repeated for every aperture. Verified bit-identical to
+    reconstruct_eta_field's eta_long for the same inputs.
+
+    Args:
+        sx_ds, sy_ds : (T, Ny, Nx) downsampled slope stack (the same grid
+            reconstruct_eta_field operates on; here downsample=1 because the
+            driver already downsampled).
+        fs : frame rate (Hz).
+        aperture_mask : (Ny, Nx) boolean circular aperture.
+        freqs_cwt : CWT frequency grid (Hz).
+        water_depth_m : depth for the dispersion relation.
+
+    Returns:
+        eta_long : (T,) spatial-mean elevation series (m).
+    """
+    T = sx_ds.shape[0]
+    temporal_W = _make_temporal_window(T, "tukey", 0.25)
+    sx_mean = _aperture_spatial_mean(sx_ds, aperture_mask)
+    sy_mean = _aperture_spatial_mean(sy_ds, aperture_mask)
+    sx_mean = sx_mean - sx_mean.mean()
+    sy_mean = sy_mean - sy_mean.mean()
+    Wsx = _cwt(sx_mean * temporal_W, freqs_cwt, fs, mother).values
+    Wsy = _cwt(sy_mean * temporal_W, freqs_cwt, fs, mother).values
+    _, k_disp = lindisp_with_current(2 * np.pi * freqs_cwt, water_depth_m, 0.0)
+    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k_disp)
+    return _inverse_cwt(W_eta, freqs_cwt, fs, mother)
 
 
 def main(argv=None) -> int:
@@ -195,37 +237,49 @@ def main(argv=None) -> int:
               "only the short-wave shape. (Use the full 60 s stack.)")
 
     # ------------------------------------------------------------------
-    # 3+4. For each aperture, re-run only the CWT-based eta step and take the
-    #      frame-center elevation series. We reuse the inscribed diameter from
-    #      the first (full-frame) reconstruction's diag.
+    # 3+4. eta_short (the per-frame g2s surface integration) is INDEPENDENT of
+    #      the averaging aperture -- only the long-wave mean eta_long(t)
+    #      depends on it. So we run the full reconstruct_eta_field ONCE (for
+    #      eta_short and the full-frame eta_long), then for the other apertures
+    #      recompute only the cheap 1-D long-wave inversion and add the SAME
+    #      center eta_short. This is bit-identical to three full passes but
+    #      skips two expensive g2s loops.
     # ------------------------------------------------------------------
-    recon_kwargs = dict(
-        dx=dx_m, fs=fs, downsample=1,   # already downsampled in the driver
-        long_wave=base.long_wave_ran, verbose=False,
-    )
-    if base.ortho is not None:
-        # water depth was already resolved by the driver into base.diag use;
-        # reconstruct_eta_field will fall back to its default if unset.
-        pass
+    print("reconstructing eta (full pass: eta_short once + full-frame eta_long) ...")
+    eta_xyt, eta_long_full, eta_short, conf, diag = reconstruct_eta_field(
+        base.slope_x, base.slope_y, dx=dx_m, fs=fs, downsample=1,
+        aperture_diameter_m=None, long_wave=base.long_wave_ran, verbose=True)
 
-    full_diam = None
-    series = {}   # label -> (eta_center_series,)
+    Ny, Nx = eta_xyt.shape[1], eta_xyt.shape[2]
+    cy, cx = Ny // 2, Nx // 2
+    eta_short_center = eta_short[:, cy, cx]          # aperture-independent
+    full_diam = inscribed_diameter_m(diag)
+
+    # The downsampled slope grid and freqs the long-wave step operates on. The
+    # driver already downsampled (downsample=1 here), so dx_ds == dx_m and the
+    # grid is base.slope_x itself.
+    sx_ds, sy_ds = base.slope_x, base.slope_y
+    dx_ds = diag["dx_ds"]
+    freqs_cwt = np.linspace(0.05, 2.0, 80)           # reconstruct_eta_field default
+    water_depth_m = 100.0                            # recon default (deep water)
+
+    series = {}   # label -> eta_center series
     for frac in APERTURE_FRACTIONS:
         if frac == 1.0:
-            # First pass: full frame (aperture=None), and learn the inscribed
-            # diameter from the diag for the fractional discs.
-            eta_xyt, eta_long, eta_short, conf, diag = reconstruct_eta_field(
-                base.slope_x, base.slope_y, aperture_diameter_m=None, **recon_kwargs)
-            full_diam = inscribed_diameter_m(diag)
+            eta_long = eta_long_full
             label = f"PSS full frame (D={full_diam:.2f} m)"
-        else:
+        elif base.long_wave_ran:
             diam = frac * full_diam
-            eta_xyt, eta_long, eta_short, conf, diag = reconstruct_eta_field(
-                base.slope_x, base.slope_y, aperture_diameter_m=diam, **recon_kwargs)
-            label = f"PSS {frac:g}x (D={diam:.2f} m)"
+            mask = _circular_aperture_mask(sx_ds.shape[1], sx_ds.shape[2],
+                                           dx_ds, diam)
+            eta_long = _eta_long_for_aperture(
+                sx_ds, sy_ds, fs, mask, freqs_cwt, water_depth_m)
+            label = f"PSS {frac:g}x (D={frac*full_diam:.2f} m)"
+        else:
+            eta_long = np.zeros(sx_ds.shape[0])
+            label = f"PSS {frac:g}x (D={frac*full_diam:.2f} m, no long-wave)"
 
-        Ny, Nx = eta_xyt.shape[1], eta_xyt.shape[2]
-        eta_center = eta_xyt[:, Ny // 2, Nx // 2]
+        eta_center = eta_short_center + eta_long
         series[label] = eta_center
         print(f"  aperture {frac:>4g}x: eta_center std = "
               f"{np.std(eta_center)*100:.2f} cm")
