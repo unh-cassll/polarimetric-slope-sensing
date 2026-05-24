@@ -28,19 +28,18 @@ Pipeline
      aperture-independent; only the long-wave mean differs).
   5. Compute the omnidirectional frequency spectrum S(f) (Welch PSD, m^2/Hz)
      for each of the three series and for the full 10 min lidar elevation.
-  5b. Compute two FIELD-based spectra (per-pixel temporal Welch, averaged over
-     all pixels; stacks first decimated in time, anti-aliased, by
-     --time-decimate to cut FFT cost):
-       - slope-inverted elevation: the slope-component frequency spectra summed
-         and converted to elevation via deep-water dispersion,
-         S_eta(f) = S_slope(f) * g^2 / (2 pi f)^4, band-limited to f >= --pss-fmin
-         because that compensation amplifies low-frequency noise as f^-4;
-       - short-wave elevation field: the omnidirectional spectrum of the
-         directly g2s-resolved eta_short(x, y, t) -- only waves resolved within
-         the imager footprint.
+  5b. Compute the slope-inverted elevation spectrum (per-pixel, averaged over
+     all pixels; the slope stack first decimated in time, anti-aliased, by
+     --time-decimate to cut FFT cost): the slope-component frequency spectra
+     summed and converted to elevation via deep-water dispersion,
+     S_eta(f) = S_slope(f) * g^2 / (2 pi f)^4, band-limited to f >= --pss-fmin
+     because that compensation amplifies low-frequency noise as f^-4.
   6. Plot all spectra on one log-log axis with labeled axes and legend. The
-     three aperture curves are solid, the lidar dashed, the short-wave field
-     dash-dot, and the slope-inverted dotted.
+     three aperture curves are solid, the lidar dashed, and the slope-inverted
+     dotted.
+  7. Write the three PSS aperture elevation time series (full 30 Hz) to a
+     NetCDF (--series-out) so a notebook can recompute the spectra itself. The
+     lidar is left in its own committed file for the notebook to read alongside.
 
 "Full frame" aperture
 ---------------------
@@ -280,7 +279,7 @@ def slope_inverted_elevation_spectrum(sx, sy, fs, seg_seconds=30.0,
     the observed slope FREQUENCIES imply under deep-water dispersion?"
 
     The g^2/(2 pi f)^4 factor amplifies low-frequency noise enormously (~10^4
-    at 0.05 Hz), so the result is band-limited to f >= f_min on return: bins
+    at 0.04 Hz), so the result is band-limited to f >= f_min on return: bins
     below f_min are set to NaN (not plotted) rather than displaying amplified
     noise. f_min default 0.08 Hz sits safely below the swell peak (~0.17 Hz).
 
@@ -321,6 +320,72 @@ def inscribed_diameter_m(diag) -> float:
     dx_ds = float(diag["dx_ds"])
     Ny, Nx = diag["aperture_mask"].shape
     return dx_ds * min(Ny, Nx)
+
+
+def _write_aperture_series(path, series_records, fs, dx_m, full_diam,
+                           long_wave_ran):
+    """Write the per-aperture elevation time series to NetCDF.
+
+    One variable per aperture (eta_full, eta_0p5, eta_0p25), each the
+    frame-center elevation series at the full frame rate, plus a shared time
+    vector and metadata (aperture diameter, fs, ground dx). A notebook can
+    open this alongside the committed lidar file and recompute the spectra.
+
+    Args:
+        path : output .nc path.
+        series_records : list of (frac, diameter_m, eta_center) tuples.
+        fs : frame rate (Hz) of the series.
+        dx_m : ground pixel size (m) of the reconstructed grid.
+        full_diam : inscribed-circle diameter (m) of the full-frame aperture.
+        long_wave_ran : whether the long-wave inversion was active.
+    """
+    from netCDF4 import Dataset
+
+    n = len(series_records[0][2])
+    t = np.arange(n) / fs
+
+    # frac -> safe variable-name suffix: 1.0->full, 0.5->0p5, 0.25->0p25
+    def _suffix(frac):
+        if frac == 1.0:
+            return "full"
+        # format the fraction, strip leading "0", turn the dot into "p"
+        return ("%g" % frac).replace("0.", "0p").replace(".", "p")
+
+    with Dataset(str(path), "w", format="NETCDF4") as ds:
+        ds.description = ("PSS aperture-averaged water-surface elevation time "
+                          "series (frame-center), one per circular averaging "
+                          "aperture. Companion to the committed lidar elevation "
+                          "file; a notebook computes spectra from both.")
+        ds.source = "spectra_vs_aperture.py"
+        ds.long_wave_ran = "true" if long_wave_ran else "false"
+
+        ds.createDimension("time", n)
+        tv = ds.createVariable("time", "f8", ("time",))
+        tv.units = "s"
+        tv.long_name = "time from acquisition start"
+        tv[:] = t
+
+        for frac, diam, eta in series_records:
+            name = f"eta_{_suffix(frac)}"
+            v = ds.createVariable(name, "f8", ("time",))
+            v.units = "m"
+            v.long_name = (f"center elevation, {('full frame' if frac == 1.0 else f'{frac:g}x')} "
+                           f"aperture")
+            v.aperture_diameter_m = float(diam)
+            v.aperture_fraction = float(frac)
+            v[:] = np.asarray(eta, dtype=float)
+
+        for sname, val, units in [
+            ("framerate", fs, "Hz"),
+            ("ground_dx", dx_m, "m"),
+            ("full_frame_diameter", full_diam, "m"),
+        ]:
+            sv = ds.createVariable(sname, "f8")
+            sv.units = units
+            sv[...] = float(val)
+
+    print(f"wrote aperture elevation series -> {path} "
+          f"({len(series_records)} apertures, {n} samples @ {fs:.0f} Hz)")
 
 
 def _eta_long_for_aperture(sx_ds, sy_ds, fs, aperture_mask, freqs_cwt,
@@ -390,12 +455,18 @@ def main(argv=None) -> int:
                         "= lower frequencies resolved but fewer averages.")
     p.add_argument("--out", default="spectra_vs_aperture.png",
                    help="output figure path")
-    p.add_argument("--pss-fmin", type=float, default=0.08,
+    p.add_argument("--series-out", default="pss_aperture_elevation.nc",
+                   help="NetCDF path for the per-aperture elevation time series "
+                        "(full 30 Hz), written so a notebook can recompute the "
+                        "spectra. The lidar is left in its own committed file. "
+                        "Default: pss_aperture_elevation.nc in the cwd.")
+    p.add_argument("--pss-fmin", type=float, default=0.06,
                    help="low-frequency cutoff (Hz) for ALL PSS elevation curves "
-                        "(default: 0.08). The long-wave inversion has no content "
-                        "below its 0.05 Hz CWT floor and the 1/k (and slope-"
+                        "(default: 0.06). The long-wave inversion has no content "
+                        "below its 0.04 Hz CWT floor and the 1/k (and slope-"
                         "inverted 1/k^2) dispersion division amplifies low-f "
-                        "noise, so PSS curves are not plotted below this. The "
+                        "noise, so PSS curves are not plotted below this. 0.06 "
+                        "leaves a small margin above the 0.04 Hz floor. The "
                         "lidar, which legitimately resolves lower, is NOT "
                         "clipped. Sits below the ~0.17 Hz swell peak.")
     p.add_argument("--time-decimate", type=int, default=3,
@@ -443,6 +514,7 @@ def main(argv=None) -> int:
         gain_reference_path=median_path,
         downsample=args.downsample,
         reduce_downsample=args.reduce_downsample,
+        short_wave=True,          # the field-spectrum step needs eta_short
         return_slopes=True,
         verbose=True,
     )
@@ -470,7 +542,8 @@ def main(argv=None) -> int:
     print("reconstructing eta (full pass: eta_short once + full-frame eta_long) ...")
     eta_xyt, eta_long_full, eta_short, conf, diag = reconstruct_eta_field(
         base.slope_x, base.slope_y, dx=dx_m, fs=fs, downsample=1,
-        aperture_diameter_m=None, long_wave=base.long_wave_ran, verbose=True)
+        aperture_diameter_m=None, long_wave=base.long_wave_ran,
+        short_wave=True, verbose=True)
 
     Ny, Nx = eta_xyt.shape[1], eta_xyt.shape[2]
     cy, cx = Ny // 2, Nx // 2
@@ -482,13 +555,15 @@ def main(argv=None) -> int:
     # grid is base.slope_x itself.
     sx_ds, sy_ds = base.slope_x, base.slope_y
     dx_ds = diag["dx_ds"]
-    freqs_cwt = np.linspace(0.05, 2.0, 80)           # reconstruct_eta_field default
+    freqs_cwt = np.linspace(0.04, 2.0, 80)           # reconstruct_eta_field default
     water_depth_m = 100.0                            # recon default (deep water)
 
-    series = {}   # label -> eta_center series
+    series = {}   # label -> eta_center series (for plotting)
+    series_records = []   # (frac, diameter_m, eta_center) for the NetCDF writer
     for frac in APERTURE_FRACTIONS:
         if frac == 1.0:
             eta_long = eta_long_full
+            diam = full_diam
             label = f"PSS full frame (D={full_diam:.2f} m)"
         elif base.long_wave_ran:
             diam = frac * full_diam
@@ -498,52 +573,48 @@ def main(argv=None) -> int:
                 sx_ds, sy_ds, fs, mask, freqs_cwt, water_depth_m)
             label = f"PSS {frac:g}x (D={frac*full_diam:.2f} m)"
         else:
+            diam = frac * full_diam
             eta_long = np.zeros(sx_ds.shape[0])
             label = f"PSS {frac:g}x (D={frac*full_diam:.2f} m, no long-wave)"
 
         eta_center = eta_short_center + eta_long
         series[label] = eta_center
+        series_records.append((frac, diam, eta_center))
         print(f"  aperture {frac:>4g}x: eta_center std = "
               f"{np.std(eta_center)*100:.2f} cm")
 
     # ------------------------------------------------------------------
-    # 4b. Two FIELD-based spectra (per-pixel temporal Welch, averaged over
-    #     pixels). These are resource-intensive (a Welch over every pixel), so
-    #     first decimate both stacks in time (anti-aliased) by --time-decimate
-    #     -- the discarded high frequencies are above what the footprint
-    #     resolves spatially anyway.
-    #       (1) slope-inverted elevation: S_eta(f) from the slope frequency
-    #           content via deep-water dispersion (g^2/(2 pi f)^4), band-limited.
-    #       (2) short-wave elevation field: the directly g2s-resolved eta_short.
+    # Write the aperture elevation time series (full fs) to NetCDF so a
+    # notebook can recompute the spectra. Lidar left in its own file.
+    # ------------------------------------------------------------------
+    _write_aperture_series(args.series_out, series_records, fs, dx_m,
+                           full_diam, base.long_wave_ran)
+
+    # ------------------------------------------------------------------
+    # 4b. Slope-inverted elevation spectrum (per-pixel, averaged over pixels):
+    #     S_eta(f) from the slope frequency content via deep-water dispersion
+    #     (g^2/(2 pi f)^4), band-limited. The slope stack is first decimated in
+    #     time (anti-aliased) by --time-decimate -- the discarded high
+    #     frequencies are above what the footprint resolves spatially anyway.
     # ------------------------------------------------------------------
     td = max(1, args.time_decimate)
     if td > 1:
-        print(f"decimating stacks in time by {td} ({fs:.0f} -> {fs/td:.0f} Hz, "
-              f"anti-aliased) for the field spectra ...")
+        print(f"decimating slope stack in time by {td} "
+              f"({fs:.0f} -> {fs/td:.0f} Hz, anti-aliased) ...")
         sx_dec = decimate(sx_ds, td, axis=0, ftype="fir").astype(float)
         sy_dec = decimate(sy_ds, td, axis=0, ftype="fir").astype(float)
-        eta_short_dec = decimate(eta_short, td, axis=0, ftype="fir").astype(float)
         fs_field = fs / td
     else:
-        sx_dec, sy_dec, eta_short_dec, fs_field = sx_ds, sy_ds, eta_short, fs
+        sx_dec, sy_dec, fs_field = sx_ds, sy_ds, fs
 
-    print(f"computing field spectra (per-pixel {args.method} over "
-          f"{eta_short_dec.shape[1]*eta_short_dec.shape[2]} pixels @ "
-          f"{fs_field:.0f} Hz) ...")
+    print(f"computing slope-inverted spectrum (per-pixel {args.method} over "
+          f"{sx_dec.shape[1]*sx_dec.shape[2]} pixels @ {fs_field:.0f} Hz) ...")
     f_inv, S_inv = slope_inverted_elevation_spectrum(
         sx_dec, sy_dec, fs_field, seg_seconds=args.seg_seconds,
         f_min=args.pss_fmin, method=args.method,
         bands_per_octave=args.bands_per_octave)
-    if args.method == "logband":
-        f_sw, S_sw, _ = field_logband_spectrum(
-            eta_short_dec, fs_field, bands_per_octave=args.bands_per_octave)
-    else:
-        f_sw, S_sw = field_omnidirectional_spectrum(
-            eta_short_dec, fs_field, seg_seconds=args.seg_seconds)
     print(f"  slope-inverted : {np.sum(np.isfinite(S_inv))} valid bins "
           f"(f >= {args.pss_fmin} Hz)")
-    print(f"  short-wave field: peak at "
-          f"{f_sw[np.nanargmax(S_sw)]:.3f} Hz")
 
     # ------------------------------------------------------------------
     # 5. Lidar spectrum (full 10 min record).
@@ -565,7 +636,7 @@ def main(argv=None) -> int:
     def _clip_low(f, S, fmin):
         """Mask a PSS spectrum below fmin (set NaN) so it is not plotted there.
 
-        The long-wave inversion has no content below its 0.05 Hz CWT floor, and
+        The long-wave inversion has no content below its 0.04 Hz CWT floor, and
         the 1/k dispersion division inflates low-f slope noise, so PSS curves
         are not trustworthy below ~fmin. The lidar is exempt (it resolves
         lower). NaN values simply break the line; they do not draw at zero.
@@ -593,12 +664,9 @@ def main(argv=None) -> int:
     ax.loglog(f_lid, S_lid, color="k", lw=2.0, ls="--",
               label=f"lidar (10 min, {fs_lid:.0f} Hz)")
 
-    # Two field-based spectra, distinct styles so they read apart from the
-    # solid aperture curves and the dashed lidar. The short-wave field is
-    # clipped at the shared PSS floor; the slope-inverted was already NaN'd
-    # below f_min in its helper.
-    ax.loglog(f_sw, _clip_low(f_sw, S_sw, args.pss_fmin), color="#9467bd",
-              lw=1.6, ls="-.", label="PSS short-wave field (g2s, resolved)")
+    # Slope-inverted field spectrum, dotted so it reads apart from the solid
+    # aperture curves and the dashed lidar. Already NaN'd below f_min in its
+    # helper.
     ax.loglog(f_inv, S_inv, color="#ff7f0e", lw=1.6, ls=":",
               label=f"PSS slope-inverted (deep-water, f$\\geq${args.pss_fmin:g} Hz)")
 

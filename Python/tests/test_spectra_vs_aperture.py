@@ -282,7 +282,7 @@ def test_eta_long_fast_path_matches_full_reconstruct():
         sx, sy, dx=dx, fs=fs, downsample=1, aperture_diameter_m=None,
         long_wave=True, verbose=False)
     full_diam = inscribed_diameter_m(diag)
-    freqs = np.linspace(0.05, 2.0, 80)
+    freqs = np.linspace(0.04, 2.0, 80)   # matches reconstruct_eta_field default
 
     for frac in (0.5, 0.25):
         diam = frac * full_diam
@@ -294,3 +294,29 @@ def test_eta_long_fast_path_matches_full_reconstruct():
         mask = _circular_aperture_mask(Ny, Nx, diag["dx_ds"], diam)
         el_fast = _eta_long_for_aperture(sx, sy, fs, mask, freqs, 100.0)
         assert np.array_equal(el_full, el_fast)
+
+
+def test_write_aperture_series_roundtrips(tmp_path):
+    # The aperture-series writer must produce a NetCDF a notebook can read:
+    # one eta_* variable per aperture (with diameter/fraction attrs), a shared
+    # time vector, and scalar metadata.
+    from spectra_vs_aperture import _write_aperture_series
+    from netCDF4 import Dataset
+    n, fs = 600, 30.0
+    recs = [
+        (1.0, 2.90, np.sin(np.arange(n) / fs)),
+        (0.5, 1.45, np.cos(np.arange(n) / fs)),
+        (0.25, 0.73, 0.5 * np.sin(np.arange(n) / fs)),
+    ]
+    out = tmp_path / "series.nc"
+    _write_aperture_series(str(out), recs, fs, 0.05, 2.90, True)
+
+    with Dataset(str(out)) as ds:
+        assert set(["eta_full", "eta_0p5", "eta_0p25"]).issubset(ds.variables)
+        assert ds.variables["eta_full"].aperture_diameter_m == 2.90
+        assert ds.variables["eta_0p25"].aperture_fraction == 0.25
+        assert ds.variables["time"].size == n
+        assert float(ds.variables["framerate"][...]) == fs
+        # round-trip the data faithfully
+        assert np.allclose(np.asarray(ds.variables["eta_full"][:]),
+                           np.sin(np.arange(n) / fs))
