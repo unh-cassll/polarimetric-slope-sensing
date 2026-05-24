@@ -64,7 +64,9 @@ Run
     # options:
     #   --stack {full,3s}   which Zenodo stack to reduce (default: full)
     #   --downsample N      output-grid subsample factor (default: 8)
-    #   --seg-seconds S     Welch segment length in seconds (default: 30)
+    #   --method M          spectral estimator: logband (default) or welch
+    #   --bands-per-octave N  log-band resolution for logband (default: 12)
+    #   --seg-seconds S     Welch segment length in seconds (welch only; def 30)
     #   --pss-fmin F        low-f cutoff (Hz) for ALL PSS elevation curves
     #                       (default: 0.08)
     #   --time-decimate N   anti-aliased time decimation for field spectra
@@ -82,7 +84,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.signal import welch, decimate
+from scipy.signal import welch, decimate, periodogram
 
 # make examples/_data and the packages importable regardless of invocation
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -154,6 +156,85 @@ def omnidirectional_spectrum(eta, fs, seg_seconds=30.0, detrend="linear"):
 _G = 9.81
 
 
+def logband_spectrum(eta, fs, bands_per_octave=12, fmin=None, detrend="linear"):
+    """Log-frequency band-averaged spectrum (multiresolution).
+
+    A single Welch (or pwelch) call uses ONE window length for all
+    frequencies, forcing a single trade between low-frequency resolution and
+    high-frequency averaging. This estimator instead computes ONE
+    full-record periodogram -- the finest possible frequency resolution -- and
+    then averages its bins within logarithmically-spaced frequency bands.
+
+    The result keeps fine resolution at low frequency (few periodogram bins per
+    band there, so the swell peak and its low side are preserved) while
+    averaging many bins per band at high frequency (variance falls, the noisy
+    tail smooths). Equivalently, the number of degrees of freedom per band
+    grows with frequency -- the standard convention for omnidirectional wave
+    spectra. The band value is the MEAN periodogram density in the band (a
+    PSD, m^2/Hz), so curves remain directly comparable and variance-consistent.
+
+    Args:
+        eta : 1-D series (m, or slope if used on a component).
+        fs : sample rate (Hz).
+        bands_per_octave : log-band resolution. Higher = more points / less
+            smoothing; lower = smoother. Default 12.
+        fmin : lowest band edge (Hz). Defaults to the periodogram's first
+            non-zero bin (1 / record length).
+        detrend : passed to scipy.signal.periodogram.
+
+    Returns:
+        (fc, S, dof) : geometric band-center frequency (Hz), band-mean PSD
+        (m^2/Hz), and degrees of freedom per band (~2 x bins averaged).
+    """
+    eta = np.asarray(eta, dtype=float)
+    eta = eta[np.isfinite(eta)]
+    if eta.size < 8:
+        raise ValueError(f"series too short for a spectrum: {eta.size} samples")
+    f, P = periodogram(eta - eta.mean(), fs=fs, window="hann", detrend=detrend)
+    f, P = f[1:], P[1:]                      # drop the DC bin
+    if fmin is None or fmin < f[0]:
+        fmin = f[0]
+    fmax = f[-1]
+    nb = max(1, int(np.ceil(np.log2(fmax / fmin) * bands_per_octave)))
+    edges = fmin * 2.0 ** (np.arange(nb + 1) / bands_per_octave)
+    fc, S, dof = [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (f >= lo) & (f < hi)
+        n = int(m.sum())
+        if n > 0:
+            fc.append(np.sqrt(lo * hi))      # geometric band center
+            S.append(P[m].mean())            # band-mean PSD (density)
+            dof.append(2 * n)                # ~2 dof per periodogram bin
+    return np.asarray(fc), np.asarray(S), np.asarray(dof)
+
+
+def field_logband_spectrum(field, fs, bands_per_octave=12, fmin=None):
+    """Log-band spectrum of a (T, Ny, Nx) field, averaged over pixels.
+
+    Periodogram along the time axis of every pixel, averaged over pixels, then
+    log-band averaged in frequency -- the multiresolution analog of
+    field_omnidirectional_spectrum. Per-pixel linear detrend.
+    """
+    field = np.asarray(field, dtype=float)
+    f, P = periodogram(field, fs=fs, window="hann", detrend="linear", axis=0)
+    P_omni = P.reshape(P.shape[0], -1).mean(axis=1)
+    f, P_omni = f[1:], P_omni[1:]            # drop DC
+    if fmin is None or fmin < f[0]:
+        fmin = f[0]
+    fmax = f[-1]
+    nb = max(1, int(np.ceil(np.log2(fmax / fmin) * bands_per_octave)))
+    edges = fmin * 2.0 ** (np.arange(nb + 1) / bands_per_octave)
+    fc, S, dof = [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (f >= lo) & (f < hi)
+        n = int(m.sum())
+        if n > 0:
+            fc.append(np.sqrt(lo * hi))
+            S.append(P_omni[m].mean())
+            dof.append(2 * n)
+    return np.asarray(fc), np.asarray(S), np.asarray(dof)
+
+
 def field_omnidirectional_spectrum(field, fs, seg_seconds=30.0):
     """Omnidirectional frequency spectrum of a (T, Ny, Nx) field, per pixel.
 
@@ -183,7 +264,8 @@ def field_omnidirectional_spectrum(field, fs, seg_seconds=30.0):
 
 
 def slope_inverted_elevation_spectrum(sx, sy, fs, seg_seconds=30.0,
-                                      f_min=0.08):
+                                      f_min=0.08, method="logband",
+                                      bands_per_octave=12):
     """Elevation spectrum inferred from the slope fields' frequency content.
 
     Forms the per-pixel omnidirectional frequency spectrum of each slope
@@ -205,15 +287,21 @@ def slope_inverted_elevation_spectrum(sx, sy, fs, seg_seconds=30.0,
     Args:
         sx, sy : (T, Ny, Nx) cross- and along-look slope stacks (dimensionless).
         fs : sample rate (Hz).
-        seg_seconds : Welch segment length in seconds.
+        seg_seconds : Welch segment length in seconds (method='welch' only).
         f_min : low-frequency cutoff (Hz); bins below are returned as NaN.
+        method : 'logband' (multiresolution, default) or 'welch'.
+        bands_per_octave : log-band resolution (method='logband' only).
 
     Returns:
         (f, S_eta) : frequency (Hz) and compensated elevation PSD (m^2/Hz),
         with S_eta = NaN for f < f_min and at f = 0.
     """
-    f, S_sx = field_omnidirectional_spectrum(sx, fs, seg_seconds)
-    _, S_sy = field_omnidirectional_spectrum(sy, fs, seg_seconds)
+    if method == "logband":
+        f, S_sx, _ = field_logband_spectrum(sx, fs, bands_per_octave)
+        _, S_sy, _ = field_logband_spectrum(sy, fs, bands_per_octave)
+    else:
+        f, S_sx = field_omnidirectional_spectrum(sx, fs, seg_seconds)
+        _, S_sy = field_omnidirectional_spectrum(sy, fs, seg_seconds)
     S_slope = S_sx + S_sy
 
     omega = 2.0 * np.pi * f
@@ -283,6 +371,17 @@ def main(argv=None) -> int:
                         "which OOMs a 32 GB machine during orthorectification. "
                         "4 keeps the peak near ~2 GB. Use 2 for finer spatial "
                         "resolution if you have >=32 GB free, 1 for full native.")
+    p.add_argument("--method", choices=("logband", "welch"), default="logband",
+                   help="spectral estimator (default: logband). 'logband' is "
+                        "multiresolution: one full-record periodogram averaged "
+                        "into log-frequency bands, so low frequencies keep fine "
+                        "resolution while high frequencies are smoothed (the "
+                        "wave-spectrum convention; what a single Welch/pwelch "
+                        "call CANNOT do). 'welch' is the classic fixed-window "
+                        "estimator (uses --seg-seconds).")
+    p.add_argument("--bands-per-octave", type=int, default=12,
+                   help="log-band resolution for --method logband (default: 12). "
+                        "Higher = more detail / less smoothing.")
     p.add_argument("--seg-seconds", type=float, default=30.0,
                    help="Welch segment length in SECONDS (default: 30). "
                         "Converted to samples per series via each instrument's "
@@ -428,14 +527,19 @@ def main(argv=None) -> int:
     else:
         sx_dec, sy_dec, eta_short_dec, fs_field = sx_ds, sy_ds, eta_short, fs
 
-    print(f"computing field spectra (per-pixel Welch over "
+    print(f"computing field spectra (per-pixel {args.method} over "
           f"{eta_short_dec.shape[1]*eta_short_dec.shape[2]} pixels @ "
           f"{fs_field:.0f} Hz) ...")
     f_inv, S_inv = slope_inverted_elevation_spectrum(
         sx_dec, sy_dec, fs_field, seg_seconds=args.seg_seconds,
-        f_min=args.pss_fmin)
-    f_sw, S_sw = field_omnidirectional_spectrum(
-        eta_short_dec, fs_field, seg_seconds=args.seg_seconds)
+        f_min=args.pss_fmin, method=args.method,
+        bands_per_octave=args.bands_per_octave)
+    if args.method == "logband":
+        f_sw, S_sw, _ = field_logband_spectrum(
+            eta_short_dec, fs_field, bands_per_octave=args.bands_per_octave)
+    else:
+        f_sw, S_sw = field_omnidirectional_spectrum(
+            eta_short_dec, fs_field, seg_seconds=args.seg_seconds)
     print(f"  slope-inverted : {np.sum(np.isfinite(S_inv))} valid bins "
           f"(f >= {args.pss_fmin} Hz)")
     print(f"  short-wave field: peak at "
@@ -470,14 +574,22 @@ def main(argv=None) -> int:
         S[np.asarray(f) < fmin] = np.nan
         return S
 
+    def _point_spectrum(series_1d, sample_rate):
+        """Dispatch a 1-D series to the chosen estimator -> (f, S)."""
+        if args.method == "logband":
+            f, S, _ = logband_spectrum(series_1d, sample_rate,
+                                       bands_per_octave=args.bands_per_octave)
+            return f, S
+        return omnidirectional_spectrum(series_1d, sample_rate,
+                                        seg_seconds=args.seg_seconds)
+
     pss_colors = ["#1f77b4", "#2ca02c", "#d62728"]   # full, 0.5x, 0.25x
     for (label, eta_c), color in zip(series.items(), pss_colors):
-        f, S = omnidirectional_spectrum(eta_c, fs, seg_seconds=args.seg_seconds)
+        f, S = _point_spectrum(eta_c, fs)
         ax.loglog(f, _clip_low(f, S, args.pss_fmin), color=color, lw=1.6,
                   label=label)
 
-    f_lid, S_lid = omnidirectional_spectrum(eta_lid, fs_lid,
-                                            seg_seconds=args.seg_seconds)
+    f_lid, S_lid = _point_spectrum(eta_lid, fs_lid)
     ax.loglog(f_lid, S_lid, color="k", lw=2.0, ls="--",
               label=f"lidar (10 min, {fs_lid:.0f} Hz)")
 
@@ -492,7 +604,11 @@ def main(argv=None) -> int:
 
     ax.set_xlabel("frequency  $f$  (Hz)")
     ax.set_ylabel(r"elevation spectral density  $S(f)$  (m$^2$/Hz)")
-    ax.set_title("Omnidirectional elevation spectrum vs averaging aperture")
+    method_note = (f"log-band {args.bands_per_octave}/oct"
+                   if args.method == "logband"
+                   else f"Welch {args.seg_seconds:g}s")
+    ax.set_title("Omnidirectional elevation spectrum vs averaging aperture\n"
+                 f"({method_note})", fontsize=11)
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8, framealpha=0.9)
     # Focus on the gravity-wave band; trim the empty decades.

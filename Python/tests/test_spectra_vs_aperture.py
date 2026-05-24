@@ -170,11 +170,52 @@ def test_slope_inverted_recovers_deepwater_elevation():
     sy = np.zeros_like(sf)
     f_sw, S_sw = field_omnidirectional_spectrum(ef, fs, seg_seconds=102.4)
     f_iv, S_iv = slope_inverted_elevation_spectrum(sf, sy, fs, seg_seconds=102.4,
-                                                   f_min=0.08)
+                                                   f_min=0.08, method="welch")
     band = (f_sw >= 0.1) & (f_sw < 0.4)
     v_sw = _trapz(S_sw[band], f_sw[band])
     v_iv = _trapz(np.nan_to_num(S_iv[band]), f_iv[band])
     assert 0.85 < v_iv / v_sw < 1.20
+
+
+# ---------------------------------------------------------------------------
+# Log-band (multiresolution) estimator
+# ---------------------------------------------------------------------------
+
+def test_logband_peak_and_dof_growth():
+    from spectra_vs_aperture import logband_spectrum
+    fs, T = 30.0, 1800
+    t = np.arange(T) / fs
+    rng = np.random.RandomState(0)
+    eta = 0.5 * np.sin(2 * np.pi * 0.17 * t) + 0.05 * rng.randn(T)
+    fc, S, dof = logband_spectrum(eta, fs, bands_per_octave=12)
+    # peak near 0.17 Hz
+    assert abs(fc[np.argmax(S)] - 0.17) < 0.02
+    # degrees of freedom grow with frequency (multiresolution signature)
+    assert dof[-1] > dof[0]
+    assert dof[0] == 2                      # finest resolution at low f
+
+
+def test_logband_bands_per_octave_density():
+    # ~N points per octave in the dense (low) part of the spectrum.
+    from spectra_vs_aperture import logband_spectrum
+    fs, T = 30.0, 4096
+    rng = np.random.RandomState(1)
+    fc, S, dof = logband_spectrum(rng.randn(T), fs, bands_per_octave=12)
+    in_octave = np.sum((fc >= 0.5) & (fc < 1.0))
+    assert 10 <= in_octave <= 14            # ~12 per octave
+
+
+def test_logband_field_matches_point_for_uniform_field():
+    # A field identical at every pixel must log-band to the same spectrum as
+    # the single-pixel series.
+    from spectra_vs_aperture import logband_spectrum, field_logband_spectrum
+    fs, T = 10.0, 1024
+    series = np.sin(2 * np.pi * 0.15 * np.arange(T) / fs)
+    field = series[:, None, None] * np.ones((T, 4, 5))
+    fc1, S1, _ = logband_spectrum(series, fs, 12)
+    fc2, S2, _ = field_logband_spectrum(field, fs, 12)
+    assert np.allclose(fc1, fc2)
+    assert np.allclose(S1, S2, rtol=1e-6)
 
 
 def test_inscribed_diameter_uses_min_side():
