@@ -53,7 +53,8 @@ import numpy as np
 from netCDF4 import Dataset
 
 from pss import read_netcdf_frame, apply_layout_from_meta, compute_slope_field
-from eta_field_recon.orthorectify import orthorectify_static
+from pss.io import _orient_raw_frame
+from eta_field_recon.orthorectify import orthorectify_static, build_ortho_plan
 
 
 def _md5_of(path: Path, chunk: int = 1 << 20) -> str:
@@ -137,26 +138,76 @@ def main() -> None:
             gain_mode=gain_mode, theta_i_mean_deg=theta_i, n_water=n_water,
             gain_reference_frame=median_frame)
 
-    for ti in range(n):
-        frame = frame0 if ti == 0 else read_netcdf_frame(
-            args.input, time_index=ti)[0]
-        res = reduce_one(frame)
+    # Open the stack ONCE and stream frames from the open handle, slicing the
+    # time axis lazily (rf[ti] reads only that frame's bytes). This avoids
+    # reopening the (multi-GB) file 1800 times and keeps peak RAM at one frame.
+    import time as _time
+    _t0 = _time.time()
+    with Dataset(str(args.input), "r") as ds:
+        rf = ds.variables["raw_frame"]
+        rf_dims = tuple(d.lower() for d in rf.dimensions)
+        if "time" not in rf_dims:
+            raise SystemExit("input has no 'time' dimension; not a stack.")
+        t_ax = rf_dims.index("time")
+        remaining_dims = rf_dims[:t_ax] + rf_dims[t_ax + 1:]
 
-        # pre-ortho spatial mean
-        sx_mean_raw[ti] = np.nanmean(res.Sx)
-        sy_mean_raw[ti] = np.nanmean(res.Sy)
+        def read_frame(ti):
+            sl = [slice(None)] * len(rf_dims)
+            sl[t_ax] = ti
+            arr = np.asarray(rf[tuple(sl)], dtype=np.float64)
+            return _orient_raw_frame(arr, remaining_dims, time_index=0)
 
-        # orthorectify this frame, then spatial-mean the uniform-grid slopes
-        o = orthorectify_static(
-            res.Sx, res.Sy, freeboard_m=freeboard, theta_i_mean_deg=theta_i,
-            focal_length_m=focal_mm / 1000.0, pixel_pitch_m=pitch_field_m,
-            camera_azimuth_deg=azimuth, verbose=False)
-        v = o.valid
-        sx_mean[ti] = np.nanmean(o.slope_x[v])
-        sy_mean[ti] = np.nanmean(o.slope_y[v])
+        # Per-phase timers to localize any stall ("nothing bound but slow"
+        # usually means a blocking wait in one phase -- typically the read on
+        # a high-latency / synced filesystem).
+        t_read = t_reduce = t_ortho = 0.0
+        _plan = None
 
-        if ti % 100 == 0 or ti == n - 1:
-            print(f"  frame {ti+1}/{n}", flush=True)
+        for ti in range(n):
+            _a = _time.time()
+            frame = read_frame(ti)
+            _b = _time.time()
+            res = reduce_one(frame)
+            _c = _time.time()
+
+            # pre-ortho spatial mean
+            sx_mean_raw[ti] = np.nanmean(res.Sx)
+            sy_mean_raw[ti] = np.nanmean(res.Sy)
+
+            # orthorectify this frame, then spatial-mean the uniform-grid slopes.
+            # Build the (expensive) triangulation plan ONCE on the first frame
+            # and reuse it for all subsequent frames -- the geometry is static.
+            if _plan is None:
+                _plan = build_ortho_plan(
+                    res.Sx.shape[0], res.Sx.shape[1],
+                    freeboard_m=freeboard, theta_i_mean_deg=theta_i,
+                    focal_length_m=focal_mm / 1000.0,
+                    pixel_pitch_m=pitch_field_m,
+                    camera_azimuth_deg=azimuth, verbose=True)
+            o = orthorectify_static(
+                res.Sx, res.Sy, freeboard_m=freeboard, theta_i_mean_deg=theta_i,
+                focal_length_m=focal_mm / 1000.0, pixel_pitch_m=pitch_field_m,
+                camera_azimuth_deg=azimuth, plan=_plan, verbose=False)
+            v = o.valid
+            sx_mean[ti] = np.nanmean(o.slope_x[v])
+            sy_mean[ti] = np.nanmean(o.slope_y[v])
+            _d = _time.time()
+
+            t_read += _b - _a
+            t_reduce += _c - _b
+            t_ortho += _d - _c
+
+            # Live progress: every 10 frames (and first/last), with rate, ETA,
+            # and the read/reduce/ortho time split so the bottleneck is visible.
+            done = ti + 1
+            if done == 1 or done % 10 == 0 or done == n:
+                el = _time.time() - _t0
+                rate = done / el if el > 0 else 0.0
+                eta = (n - done) / rate if rate > 0 else float("nan")
+                print(f"  frame {done}/{n}  "
+                      f"({rate:.2f} frame/s, {el:.0f}s elapsed, ~{eta:.0f}s left)  "
+                      f"| read {t_read:.1f}s  reduce {t_reduce:.1f}s  "
+                      f"ortho {t_ortho:.1f}s", flush=True)
 
     # ------------------------------------------------------------------
     # Write the documented NetCDF artifact.

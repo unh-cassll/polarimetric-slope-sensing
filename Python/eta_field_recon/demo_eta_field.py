@@ -192,7 +192,7 @@ def main():
     et = eta_truth_ds[:, Ny_d//2, Nx_d//2]
     er = eta_xyt[:, Ny_d//2, Nx_d//2]
     et0 = et - et.mean(); er0 = er - er.mean()
-    print(f"  centre time series: std(truth)={et.std():.4f} m, "
+    print(f"  center time series: std(truth)={et.std():.4f} m, "
           f"std(recon)={er.std():.4f} m")
     print(f"    RMSE = {np.sqrt(np.mean((et0-er0)**2)):.4f} m, "
           f"corr = {np.corrcoef(et0, er0)[0,1]:+.4f}")
@@ -242,7 +242,7 @@ def plot_demo(eta_truth, eta_xyt, eta_long, eta_short, conf, diag,
         ax.set_xlabel('x (m)'); ax.set_ylabel('y (m)')
         plt.colorbar(im, ax=ax)
 
-    # Row 1 (full width): centre pixel time series, first 30 s
+    # Row 1 (full width): center pixel time series, first 30 s
     mask = t < 30
     ax = fig.add_subplot(gs[1, :])
     et = eta_truth[:, Ny_d//2, Nx_d//2]
@@ -253,8 +253,8 @@ def plot_demo(eta_truth, eta_xyt, eta_long, eta_short, conf, diag,
             label='reconstruction')
     ax.plot(t[mask], (el - el.mean())[mask], ':', color='#2A52BE', lw=0.8,
             label='eta_long only (DC path)')
-    ax.set_xlabel('t (s)'); ax.set_ylabel('eta (m) at frame centre')
-    ax.set_title('Centre pixel: truth vs reconstruction (first 30 s)')
+    ax.set_xlabel('t (s)'); ax.set_ylabel('eta (m) at frame center')
+    ax.set_title('center pixel: truth vs reconstruction (first 30 s)')
     ax.legend(fontsize=9, loc='upper right'); ax.grid(True, alpha=0.4)
 
     # Row 2 col 0: PSD comparison
@@ -272,7 +272,7 @@ def plot_demo(eta_truth, eta_xyt, eta_long, eta_short, conf, diag,
     for c in components:
         ax.axvline(c['f_peak'], color='gray', linestyle=':', alpha=0.3)
     ax.set_xlabel('freq (Hz)'); ax.set_ylabel('PSD (m^2/Hz)')
-    ax.set_title('PSD of eta at frame centre')
+    ax.set_title('PSD of eta at frame center')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3, which='both')
 
     # Row 2 col 1: spatial std vs time

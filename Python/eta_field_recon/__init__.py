@@ -36,7 +36,7 @@ ideas for extensions.
 
 from .recon import reconstruct_eta_field
 from .wavelet_core import lindisp_with_current
-from .orthorectify import orthorectify_static, OrthoResult
+from .orthorectify import orthorectify_static, OrthoResult, OrthoPlan, build_ortho_plan
 from .eta_pipeline import PipelineResult, reconstruct_eta_from_record
 
 __all__ = [
@@ -44,6 +44,8 @@ __all__ = [
     "reconstruct_eta_from_record",
     "PipelineResult",
     "orthorectify_static",
+    "build_ortho_plan",
     "OrthoResult",
+    "OrthoPlan",
     "lindisp_with_current",
 ]

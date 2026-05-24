@@ -165,11 +165,32 @@ def read_netcdf_frame(
                 f"file does not appear to be a pss/E-PSS frame export"
             )
         rf = ds.variables["raw_frame"]
-        raw = _orient_raw_frame(
-            np.asarray(rf[:], dtype=np.float64),
-            tuple(rf.dimensions),
-            time_index=time_index,
-        )
+        rf_dims = tuple(d.lower() for d in rf.dimensions)
+
+        # Read ONLY the requested frame off disk. netCDF4 slices lazily, so
+        # indexing the variable (rf[..., i, ...]) reads just that frame's
+        # bytes rather than materializing the whole (possibly multi-GB) stack.
+        # Doing rf[:] here would load every frame into RAM on every call.
+        if "time" in rf_dims:
+            t_ax = rf_dims.index("time")
+            n_t = rf.shape[t_ax]
+            if not (-n_t <= time_index < n_t):
+                raise IndexError(
+                    f"time_index {time_index} out of range for time dimension "
+                    f"of length {n_t}"
+                )
+            sl = [slice(None)] * len(rf_dims)
+            sl[t_ax] = time_index
+            frame_slice = np.asarray(rf[tuple(sl)], dtype=np.float64)
+            # time axis is now gone; tell the orienter the remaining dims
+            remaining_dims = rf_dims[:t_ax] + rf_dims[t_ax + 1:]
+            raw = _orient_raw_frame(frame_slice, remaining_dims, time_index=0)
+        else:
+            raw = _orient_raw_frame(
+                np.asarray(rf[:], dtype=np.float64),
+                rf_dims,
+                time_index=time_index,
+            )
 
         meta = FrameMetadata()
         # Scalar geometry vars

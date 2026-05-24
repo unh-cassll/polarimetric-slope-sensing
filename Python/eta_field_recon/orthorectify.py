@@ -48,7 +48,34 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from scipy.interpolate import griddata
+
+
+@dataclass
+class OrthoPlan:
+    """Reusable orthorectification plan for a fixed (static) geometry.
+
+    Holds everything that depends only on the acquisition geometry and the
+    input field shape -- the ground coordinates, the target grid, and the
+    precomputed Delaunay triangulation + barycentric weights. Building this is
+    the expensive step (the ~1e6-point triangulation); applying it to a frame
+    is a cheap gather-and-dot. Build ONCE with build_ortho_plan(), then pass it
+    to orthorectify_static(..., plan=plan) for every frame of the same camera
+    setup -- this is what makes a long record fast.
+    """
+    Ny: int
+    Nx: int
+    dx_m: float
+    x_ground: np.ndarray
+    y_ground: np.ndarray
+    Nyg: int
+    Nxg: int
+    finite: np.ndarray          # (Ny, Nx) bool: input pixels with valid ground
+    inside: np.ndarray          # (n_targets,) bool: targets inside the hull
+    weights: np.ndarray         # (M, 3) barycentric weights
+    vertices: np.ndarray        # (M, 3) input-point indices per target
+    n_targets: int
+    valid: np.ndarray           # (Nyg, Nxg) bool: grid cells with data
+    diag: dict[str, Any]
 
 
 @dataclass
@@ -109,6 +136,7 @@ def orthorectify_static(
     camera_azimuth_deg: float | None = None,
     target_dx_m: float | None = None,
     fill_value: float = np.nan,
+    plan: "OrthoPlan | None" = None,
     verbose: bool = False,
 ) -> OrthoResult:
     """Project an obliquely-viewed slope field onto a uniform ground grid.
@@ -148,14 +176,73 @@ def orthorectify_static(
         sy = sy[None]
     T, Ny, Nx = sx.shape
 
-    # ------------------------------------------------------------------
-    # Per-pixel ground coordinates (shared by all frames; static geometry).
-    # ------------------------------------------------------------------
+    # Build the (expensive) geometry/triangulation plan, or reuse one passed
+    # in. Reusing a plan across calls is what makes per-frame processing fast:
+    # the ~1e6-point Delaunay triangulation is then built ONCE, not per call.
+    if plan is None:
+        plan = build_ortho_plan(
+            Ny, Nx, freeboard_m=freeboard_m, theta_i_mean_deg=theta_i_mean_deg,
+            focal_length_m=focal_length_m, pixel_pitch_m=pixel_pitch_m,
+            camera_azimuth_deg=camera_azimuth_deg, target_dx_m=target_dx_m,
+            verbose=verbose)
+    elif (plan.Ny, plan.Nx) != (Ny, Nx):
+        raise ValueError(
+            f"plan was built for input shape ({plan.Ny}, {plan.Nx}) but the "
+            f"slope field is ({Ny}, {Nx}).")
+
+    sx_out = np.empty((T, plan.Nyg, plan.Nxg), dtype=float)
+    sy_out = np.empty((T, plan.Nyg, plan.Nxg), dtype=float)
+    for ti in range(T):
+        sx_out[ti] = _apply_plan(plan, sx[ti], fill_value)
+        sy_out[ti] = _apply_plan(plan, sy[ti], fill_value)
+
+    if not stacked:
+        sx_out = sx_out[0]
+        sy_out = sy_out[0]
+
+    return OrthoResult(
+        slope_x=sx_out, slope_y=sy_out,
+        dx_m=plan.dx_m,
+        x_ground=plan.x_ground, y_ground=plan.y_ground,
+        valid=plan.valid, diag=plan.diag,
+    )
+
+
+def _apply_plan(plan: OrthoPlan, frame_2d: np.ndarray,
+                fill_value: float) -> np.ndarray:
+    """Resample one (Ny, Nx) field onto the plan's uniform grid (cheap)."""
+    values_finite = frame_2d[plan.finite].ravel()
+    out = np.full(plan.n_targets, fill_value, dtype=float)
+    out[plan.inside] = np.einsum(
+        "mi,mi->m", values_finite[plan.vertices], plan.weights)
+    return out.reshape(plan.Nyg, plan.Nxg)
+
+
+def build_ortho_plan(
+    Ny: int,
+    Nx: int,
+    *,
+    freeboard_m: float,
+    theta_i_mean_deg: float,
+    focal_length_m: float,
+    pixel_pitch_m: float,
+    camera_azimuth_deg: float | None = None,
+    target_dx_m: float | None = None,
+    verbose: bool = False,
+) -> OrthoPlan:
+    """Build a reusable orthorectification plan for one fixed geometry.
+
+    This does the expensive, frame-independent work: ground coordinates, the
+    uniform target grid, the Delaunay triangulation of the input points, and
+    the barycentric weights locating every target in it. Pass the result to
+    orthorectify_static(..., plan=plan) to rectify many frames cheaply.
+    """
+    from scipy.spatial import Delaunay
+
     X, Y = _ground_coordinates(Ny, Nx, freeboard_m, theta_i_mean_deg,
                                focal_length_m, pixel_pitch_m)
     finite = np.isfinite(X) & np.isfinite(Y)
 
-    # Native ground sampling (for choosing target_dx and reporting trapezoid).
     dX = np.diff(X, axis=1)
     dY = np.diff(Y, axis=0)
     native_dx = float(np.nanmedian(np.abs(np.concatenate(
@@ -163,7 +250,6 @@ def orthorectify_static(
     if target_dx_m is None:
         target_dx_m = native_dx
 
-    # Trapezoid metric: how much the along-look sampling stretches near->far.
     col = Nx // 2
     ycol = Y[:, col]
     yc_finite = ycol[np.isfinite(ycol)]
@@ -173,9 +259,6 @@ def orthorectify_static(
     else:
         trapezoid_ratio = float("nan")
 
-    # ------------------------------------------------------------------
-    # Build the uniform target grid spanning the footprint.
-    # ------------------------------------------------------------------
     x_min, x_max = np.nanmin(X), np.nanmax(X)
     y_min, y_max = np.nanmin(Y), np.nanmax(Y)
     x_ground = np.arange(x_min, x_max + target_dx_m, target_dx_m)
@@ -184,8 +267,8 @@ def orthorectify_static(
     Nyg, Nxg = Xg.shape
 
     if verbose:
-        print("orthorectify_static:")
-        print(f"  input        : {T} frame(s) of {Ny}x{Nx}")
+        print("build_ortho_plan:")
+        print(f"  input        : {Ny}x{Nx}")
         print(f"  geometry     : H={freeboard_m} m, theta_i={theta_i_mean_deg} deg, "
               f"f={focal_length_m*1000:.1f} mm, pitch={pixel_pitch_m*1e3:.4f} mm")
         if camera_azimuth_deg is not None:
@@ -195,20 +278,25 @@ def orthorectify_static(
         print(f"  native dx    : {native_dx*1000:.3f} mm  "
               f"(trapezoid near/far ratio {trapezoid_ratio:.3f})")
         print(f"  output grid  : {Nyg}x{Nxg} @ dx={target_dx_m*1000:.3f} mm")
+        print(f"  triangulating {int(finite.sum())} input points ...")
 
-    # ------------------------------------------------------------------
-    # Resample each frame's slopes onto the uniform grid.
-    # ------------------------------------------------------------------
     pts = np.column_stack([X[finite].ravel(), Y[finite].ravel()])
-    sx_out = np.empty((T, Nyg, Nxg), dtype=float)
-    sy_out = np.empty((T, Nyg, Nxg), dtype=float)
-    for ti in range(T):
-        sx_out[ti] = griddata(pts, sx[ti][finite].ravel(), (Xg, Yg),
-                              method="linear", fill_value=fill_value)
-        sy_out[ti] = griddata(pts, sy[ti][finite].ravel(), (Xg, Yg),
-                              method="linear", fill_value=fill_value)
+    targets = np.column_stack([Xg.ravel(), Yg.ravel()])
 
-    valid = np.isfinite(sx_out[0]) & np.isfinite(sy_out[0])
+    tri = Delaunay(pts)
+    simplex = tri.find_simplex(targets)
+    inside = simplex >= 0
+
+    tr = tri.transform[simplex[inside]]
+    delta = targets[inside] - tr[:, 2, :]
+    bary = np.einsum("mij,mj->mi", tr[:, :2, :], delta)
+    weights = np.column_stack([bary, 1.0 - bary.sum(axis=1)])
+    vertices = tri.simplices[simplex[inside]]
+    n_targets = targets.shape[0]
+
+    valid = np.zeros(n_targets, dtype=bool)
+    valid[inside] = True
+    valid = valid.reshape(Nyg, Nxg)
 
     diag = dict(
         X=X, Y=Y, finite=finite,
@@ -217,13 +305,9 @@ def orthorectify_static(
         Xg=Xg, Yg=Yg,
     )
 
-    if not stacked:
-        sx_out = sx_out[0]
-        sy_out = sy_out[0]
-
-    return OrthoResult(
-        slope_x=sx_out, slope_y=sy_out,
-        dx_m=float(target_dx_m),
-        x_ground=x_ground, y_ground=y_ground,
-        valid=valid, diag=diag,
+    return OrthoPlan(
+        Ny=Ny, Nx=Nx, dx_m=float(target_dx_m),
+        x_ground=x_ground, y_ground=y_ground, Nyg=Nyg, Nxg=Nxg,
+        finite=finite, inside=inside, weights=weights, vertices=vertices,
+        n_targets=n_targets, valid=valid, diag=diag,
     )
