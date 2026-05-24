@@ -52,7 +52,7 @@ Run
     # options:
     #   --stack {full,3s}   which Zenodo stack to reduce (default: full)
     #   --downsample N      output-grid subsample factor (default: 8)
-    #   --nperseg N         Welch segment length in samples (default: 256)
+    #   --seg-seconds S     Welch segment length in seconds (default: 30)
     #   --out PATH          figure path (default: spectra_vs_aperture.png)
     #   --no-download       fail rather than download from Zenodo
 
@@ -89,21 +89,31 @@ _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 APERTURE_FRACTIONS = (1.0, 0.5, 0.25)
 
 
-def omnidirectional_spectrum(eta, fs, nperseg=256, detrend="linear"):
+def omnidirectional_spectrum(eta, fs, seg_seconds=30.0, detrend="linear"):
     """Omnidirectional frequency spectrum S(f) of an elevation series.
 
     Welch PSD of the (mean-removed) elevation, returning frequency (Hz) and
-    spectral density (m^2/Hz). Non-finite samples are dropped. nperseg is
-    clipped to the series length, so short series degrade to a periodogram
-    rather than erroring. The integral of S over f equals the series variance
-    (verified: Parseval).
+    spectral density (m^2/Hz). Non-finite samples are dropped. The integral of
+    S over f equals the series variance (verified: Parseval).
+
+    The Welch segment length is specified as a DURATION (seg_seconds) rather
+    than a sample count, and converted to samples per series via fs. Keying to
+    duration gives the same low-frequency resolution (1 / seg_seconds) across
+    instruments with different sample rates -- e.g. the 30 Hz PSS series and
+    the 10 Hz lidar both resolve down to ~1/30 s = 0.033 Hz at the default --
+    which makes their spectra directly comparable at low frequency. Longer
+    segments resolve lower frequencies but yield fewer averages (noisier).
+
+    If the record is shorter than one segment, nperseg is clipped to the
+    series length (the estimate degrades to a single-segment periodogram) and
+    a warning is printed.
 
     Args:
         eta : 1-D elevation series (m).
         fs : sample rate (Hz).
-        nperseg : Welch segment length (samples). Larger -> finer frequency
-            resolution but fewer averages (noisier); smaller -> smoother but
-            coarser. Clipped to len(eta).
+        seg_seconds : Welch segment length in SECONDS (default 30). The sample
+            count is round(seg_seconds * fs). Lowest resolved frequency is
+            ~1 / seg_seconds.
         detrend : passed to scipy.signal.welch ('linear', 'constant', False).
 
     Returns:
@@ -113,7 +123,13 @@ def omnidirectional_spectrum(eta, fs, nperseg=256, detrend="linear"):
     eta = eta[np.isfinite(eta)]
     if eta.size < 8:
         raise ValueError(f"elevation series too short for a spectrum: {eta.size} samples")
-    nps = int(min(nperseg, eta.size))
+    nps_target = int(round(seg_seconds * fs))
+    nps = int(min(nps_target, eta.size))
+    if nps < nps_target:
+        print(f"  WARNING: record ({eta.size/fs:.1f} s) shorter than the "
+              f"requested {seg_seconds:.0f} s Welch segment; using a single "
+              f"{nps}-sample segment (periodogram). Low-frequency resolution "
+              f"is limited to ~{fs/nps:.3f} Hz.")
     f, S = welch(eta - eta.mean(), fs=fs, nperseg=nps, detrend=detrend)
     return f, S
 
@@ -178,8 +194,12 @@ def main(argv=None) -> int:
                         "which OOMs a 32 GB machine during orthorectification. "
                         "4 keeps the peak near ~2 GB. Use 2 for finer spatial "
                         "resolution if you have >=32 GB free, 1 for full native.")
-    p.add_argument("--nperseg", type=int, default=256,
-                   help="Welch segment length in samples (default: 256)")
+    p.add_argument("--seg-seconds", type=float, default=30.0,
+                   help="Welch segment length in SECONDS (default: 30). "
+                        "Converted to samples per series via each instrument's "
+                        "sample rate, so PSS (30 Hz) and lidar (10 Hz) get the "
+                        "same low-frequency resolution (~1/seg_seconds). Longer "
+                        "= lower frequencies resolved but fewer averages.")
     p.add_argument("--out", default="spectra_vs_aperture.png",
                    help="output figure path")
     p.add_argument("--no-download", action="store_true",
@@ -303,10 +323,11 @@ def main(argv=None) -> int:
 
     pss_colors = ["#1f77b4", "#2ca02c", "#d62728"]   # full, 0.5x, 0.25x
     for (label, eta_c), color in zip(series.items(), pss_colors):
-        f, S = omnidirectional_spectrum(eta_c, fs, nperseg=args.nperseg)
+        f, S = omnidirectional_spectrum(eta_c, fs, seg_seconds=args.seg_seconds)
         ax.loglog(f, S, color=color, lw=1.6, label=label)
 
-    f_lid, S_lid = omnidirectional_spectrum(eta_lid, fs_lid, nperseg=args.nperseg)
+    f_lid, S_lid = omnidirectional_spectrum(eta_lid, fs_lid,
+                                            seg_seconds=args.seg_seconds)
     ax.loglog(f_lid, S_lid, color="k", lw=2.0, ls="--",
               label=f"lidar (10 min, {fs_lid:.0f} Hz)")
 

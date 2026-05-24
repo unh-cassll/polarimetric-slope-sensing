@@ -37,7 +37,7 @@ def test_spectrum_integral_equals_variance():
     t = np.arange(0, 600.0, 1.0 / fs)
     rng = np.random.RandomState(0)
     eta = 0.4 * np.sin(2 * np.pi * 0.12 * t) + 0.05 * rng.randn(t.size)
-    f, S = omnidirectional_spectrum(eta, fs, nperseg=2048)
+    f, S = omnidirectional_spectrum(eta, fs, seg_seconds=204.8)
     ratio = _trapz(S, f) / np.var(eta)
     assert 0.95 < ratio < 1.05
 
@@ -47,19 +47,20 @@ def test_spectrum_peaks_at_dominant_frequency():
     t = np.arange(0, 300.0, 1.0 / fs)
     f0 = 0.137
     eta = np.sin(2 * np.pi * f0 * t)
-    f, S = omnidirectional_spectrum(eta, fs, nperseg=1024)
+    f, S = omnidirectional_spectrum(eta, fs, seg_seconds=102.4)
     assert abs(f[np.argmax(S)] - f0) < 0.01
 
 
 def test_spectrum_units_are_psd():
-    # Doubling the sample rate (same physical signal) must not change S(f) at
-    # a given frequency by more than the windowing tolerance: PSD is a density.
+    # Doubling the sample rate (same physical signal, same segment DURATION)
+    # must not change S(f) at a given frequency by more than the windowing
+    # tolerance: PSD is a density, not scaled by the sample-rate ratio.
     t1 = np.arange(0, 300.0, 1 / 10.0)
     t2 = np.arange(0, 300.0, 1 / 20.0)
     e1 = np.sin(2 * np.pi * 0.1 * t1)
     e2 = np.sin(2 * np.pi * 0.1 * t2)
-    f1, S1 = omnidirectional_spectrum(e1, 10.0, nperseg=512)
-    f2, S2 = omnidirectional_spectrum(e2, 20.0, nperseg=1024)
+    f1, S1 = omnidirectional_spectrum(e1, 10.0, seg_seconds=51.2)
+    f2, S2 = omnidirectional_spectrum(e2, 20.0, seg_seconds=51.2)
     peak1 = S1[np.argmax(S1)]
     peak2 = S2[np.argmax(S2)]
     # peak densities should be comparable (within a factor of 2), not scaled
@@ -72,13 +73,39 @@ def test_spectrum_handles_nans():
     t = np.arange(0, 100.0, 1 / fs)
     eta = np.sin(2 * np.pi * 0.1 * t)
     eta[::50] = np.nan   # sprinkle no-data
-    f, S = omnidirectional_spectrum(eta, fs, nperseg=256)
+    f, S = omnidirectional_spectrum(eta, fs, seg_seconds=25.6)
     assert np.isfinite(S).all()
 
 
 def test_spectrum_too_short_raises():
     with pytest.raises(ValueError, match="too short"):
         omnidirectional_spectrum(np.zeros(4), 10.0)
+
+
+def test_seg_seconds_sets_low_frequency_resolution():
+    # A 30 s segment must resolve down to ~1/30 Hz regardless of sample rate,
+    # so the same seg_seconds gives the same lowest frequency at 10 and 30 Hz.
+    t10 = np.arange(0, 300.0, 1 / 10.0)
+    t30 = np.arange(0, 300.0, 1 / 30.0)
+    e10 = np.sin(2 * np.pi * 0.2 * t10)
+    e30 = np.sin(2 * np.pi * 0.2 * t30)
+    f10, _ = omnidirectional_spectrum(e10, 10.0, seg_seconds=30.0)
+    f30, _ = omnidirectional_spectrum(e30, 30.0, seg_seconds=30.0)
+    # first non-zero frequency bin ~ 1/30 Hz for both
+    assert abs(f10[1] - 1 / 30.0) < 1e-3
+    assert abs(f30[1] - 1 / 30.0) < 1e-3
+    assert abs(f10[1] - f30[1]) < 1e-6
+
+
+def test_seg_seconds_longer_than_record_falls_back(capsys):
+    # A 30 s segment requested on a 5 s record clips to one periodogram segment
+    # and warns, rather than erroring.
+    fs = 10.0
+    eta = np.sin(2 * np.pi * 0.3 * np.arange(0, 5.0, 1 / fs))
+    f, S = omnidirectional_spectrum(eta, fs, seg_seconds=30.0)
+    assert np.isfinite(S).all()
+    out = capsys.readouterr().out
+    assert "shorter than the requested" in out
 
 
 def test_inscribed_diameter_uses_min_side():
