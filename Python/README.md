@@ -98,10 +98,26 @@ assumes the camera pose is constant over the record. The moving-platform case
 (per-frame attitude-driven rectification) needs a per-frame motion source
 (IMU/INS) and is **not** implemented; see the TODO in `eta_pipeline.py`.
 
-Note that on a static platform the camera's constant viewing tilt is already
-removed by `pss` (which subtracts the per-frame spatial mean of the slopes),
-so orthorectification is purely the geometric pixel resample — it does not
-re-rotate the slope vectors.
+Note that `pss` does **not** subtract the per-frame spatial mean of the
+slopes. The spatial-mean slope is the swell-induced tilt of the whole
+footprint — i.e. the long-wave signal `eta_long(t)` is reconstructed from — so
+removing it per frame would destroy the very quantity the long-wave inversion
+needs (an earlier version did this and silently killed the swell). The
+genuinely constant part, the camera's fixed viewing tilt, is instead removed
+once at the **record** level inside `eta_field_recon` (it subtracts the
+time-mean of the spatial-mean slope before the long-wave inversion). The
+short-wave path is unaffected either way, since its spatial integration
+discards the per-frame mean by construction. Orthorectification is therefore
+purely the geometric pixel resample — it does not re-rotate the slope vectors.
+
+For a record, the expensive part of orthorectification — the Delaunay
+triangulation of the (~10⁶) input points — depends only on the fixed geometry,
+so it is built **once** via `build_ortho_plan()` and reused for every frame
+(`orthorectify_static(..., plan=plan)`). This makes per-frame rectification a
+cheap barycentric resample rather than a per-frame triangulation rebuild
+(~100×+ faster over a long record). Likewise the NetCDF reader slices one frame
+off disk at a time, so processing an N-frame stack never materializes more than
+a single frame in memory.
 
 ### Record-length gate on the long-wave inversion
 
@@ -126,10 +142,11 @@ along-look / cross-look slope fields, reproducing the canonical example:
 ![Example output: gain-corrected Stokes parameters and slope fields from a
 2056×2464 ASIT2019 frame](examples/example_output.jpg)
 
-The bundled example reduces a single raw frame (`asit2019_frame0001.nc`)
-using the E-PSS workflow: the empirical gain is calibrated against the
-temporal-median background frame (`asit2019_median.nc`), never against the
-frame itself. Run it with the dedicated script:
+The bundled example reduces a single raw frame (resolved by
+`_data.frame_path()`, Zenodo name `asit_2019_raw_pol_frame0001.nc`) using the
+E-PSS workflow: the empirical gain is calibrated against the temporal-median
+background frame (`_data.median_path()`, `asit_2019_raw_pol_median.nc`), never
+against the frame itself. Run it with the dedicated script:
 
 ```bash
 python examples/load_and_reduce_with_median_gain.py
@@ -241,6 +258,19 @@ reconstruct the mean-wave elevation `eta_long(t)` live and offline, without the
 t, eta_long = _data.mean_wave_timeseries()   # offline; uses the committed series
 ```
 
+A second small committed artifact, `examples/asit2019_lidar_elevation_10min.nc`
+(~105 KB), holds the independent validation ground truth: a 10-minute (6000-sample,
+10 Hz) water-surface-elevation series from a Riegl LD90-3 laser altimeter, built
+by `tools/make_lidar_elevation_nc.py`. It loads via `_data.lidar_elevation()`:
+
+```python
+t_lidar, elev = _data.lidar_elevation()      # Riegl LD90-3 elevation (m)
+```
+
+The lidar and the PSS imager start together but view spatially offset points, so
+a propagation lag between the two is expected (the file records this in its
+`timing_note`; cross-correlation measures it rather than assuming alignment).
+
 Because the raw data are not committed, the test suite resolves them
 **local-only** (no network) and **skips** the data-dependent tests when the
 files have not been cached — so the suite stays green offline (e.g. in CI),
@@ -272,11 +302,16 @@ pss/
 ├── examples/
 │   ├── load_and_reduce.py                pss demo (single frame; optional --median)
 │   ├── load_and_reduce_with_median_gain.py  E-PSS median-referenced gain demo
-│   ├── _data.py                          Zenodo resolver (download + md5) + mean_wave_timeseries()
+│   ├── _data.py                          Zenodo resolver (download + md5);
+│   │                                     mean_wave_timeseries() + lidar_elevation()
 │   ├── asit2019_mean_slope_60s.nc        committed: spatial-mean slope series (few KB)
+│   ├── asit2019_lidar_elevation_10min.nc committed: Riegl LD90-3 elevation (~105 KB)
 │   └── example_output.jpg                rendered output of the pss demo
 ├── tools/
-│   └── precompute_mean_wave.py           one-off: build the committed mean-slope series
+│   ├── precompute_mean_wave.py           one-off: build the committed mean-slope series
+│   ├── make_lidar_elevation_nc.py        one-off: package the Riegl lidar elevation
+│   ├── validate_eta_long_vs_lidar.py     cross-correlate eta_long vs lidar (lag + figure)
+│   └── diagnose_eta_long.py              localize eta_long energy/scaling on the artifact
 ├── tests/                                pytest suite
 │   ├── conftest.py
 │   ├── test_stokes.py
@@ -295,9 +330,10 @@ pss/
 
 The raw NetCDF files are **not** committed — they download from Zenodo on
 first use and cache in `examples/` (md5-verified), so `examples/*.nc` is
-`.gitignore`'d. The one exception, force-included in git, is the small
-committed artifact `asit2019_mean_slope_60s.nc` (the spatial-mean slope
-series; see the Input-data section).
+`.gitignore`'d. Two small derived artifacts are force-included in git as
+exceptions: `asit2019_mean_slope_60s.nc` (the spatial-mean slope series) and
+`asit2019_lidar_elevation_10min.nc` (the Riegl lidar validation series); see
+the Input-data section.
 
 ## Install
 
@@ -350,7 +386,7 @@ After `pip install -e .`, three console scripts are available on `$PATH`:
 
 ```bash
 pip install -e ".[test]"
-pytest                                  # 68 tests, runs in ~30 seconds
+pytest                                  # 67 pass, 21 skipped offline; ~30 s
 ```
 
 The test suite covers all three Stokes methods, all three gain modes
@@ -408,7 +444,7 @@ the reduction parameters come straight from the file:
 ```python
 from pss import read_netcdf_frame, apply_layout_from_meta, compute_slope_field
 
-frame, meta = read_netcdf_frame("examples/asit2019_frame0001.nc")
+frame, meta = read_netcdf_frame(_data.frame_path())  # Zenodo: asit_2019_raw_pol_frame0001.nc
 apply_layout_from_meta(meta)   # honor the file's super-pixel layout
 
 result = compute_slope_field(
@@ -440,8 +476,8 @@ For the E-PSS workflow, derive the empirical gain from the temporal-median
 background frame and apply it to an individual frame:
 
 ```python
-frame,  meta = read_netcdf_frame("examples/asit2019_frame0001.nc")
-median, _    = read_netcdf_frame("examples/asit2019_median.nc")
+frame,  meta = read_netcdf_frame(_data.frame_path())    # asit_2019_raw_pol_frame0001.nc
+median, _    = read_netcdf_frame(_data.median_path())    # asit_2019_raw_pol_median.nc
 apply_layout_from_meta(meta)
 
 result = compute_slope_field(
@@ -469,7 +505,7 @@ python examples/load_and_reduce.py
 python examples/load_and_reduce.py my_record.nc --time-index 12
 
 # Calibrate the empirical gain against a median frame; save the figure
-python examples/load_and_reduce.py --median examples/asit2019_median.nc \
+python examples/load_and_reduce.py --median my_median.nc \
     --save out.png --no-show
 
 # Different Stokes method / lab gain
@@ -503,9 +539,10 @@ python examples/load_and_reduce_with_median_gain.py my_frame.nc \
   reduce the frame.
 
 These files (and longer time series) are produced by the field group's
-acquisition pipeline and distributed via a Zenodo archive (DOI TBD). The
-bundled `asit2019_frame0001.nc` reduces (default native resolution,
-median-referenced empirical gain against `asit2019_median.nc`) to
+acquisition pipeline and distributed via a Zenodo archive (DOI
+[10.5281/zenodo.20361229](https://doi.org/10.5281/zenodo.20361229)). The
+bundled frame reduces (default native resolution, median-referenced empirical
+gain against the temporal-median frame) to
 `g = 1.5587`, `median DoLP = 0.3309`, `median AOI = 26.099°`,
 `mss = 0.022729` (dimensionless).
 
@@ -596,6 +633,28 @@ See `eta_field_recon/README.md` for the API reference and
 `eta_field_recon/HANDOFF.md` for the full method derivation, decisions,
 known gotchas, and ideas for extensions (anti-aliasing, MEM/MLM
 directional estimator, current correction, streaming for long records).
+
+### Validation against an independent lidar
+
+The long-wave reconstruction has been checked against an independent
+near-infrared laser altimeter (Riegl LD90-3) over the same ASIT2019 period.
+Running `tools/validate_eta_long_vs_lidar.py` reconstructs `eta_long(t)` from
+the committed slope series and cross-correlates it against the committed lidar
+series, band-limited to 0.05–0.5 Hz, measuring the (timestamp-driven)
+alignment lag empirically. On the 60 s record the two agree to **~1 % in
+amplitude** (band-passed std 39.5 cm vs 38.9 cm) with a waveform correlation of
+**r ≈ 0.80** over the overlap window, and their elevation spectra overlap
+through the energetic wave band (matched peak near 0.17 Hz, matched variance).
+`tools/diagnose_eta_long.py` dumps the inversion stage by stage for a single
+artifact.
+
+A practical note on the wavelet formulation: because the inversion is a CWT
+band-limited to roughly [0.05, 2] Hz, the `1/k` dispersion division is never
+evaluated in the `f → 0` (`k → 0`) regime where it would amplify
+low-frequency slope noise into spurious elevation. The band floor does
+implicitly what a direct spectral `1/k` inversion needs explicit
+low-frequency conditioning to achieve — the inferred elevation spectrum shows
+no low-frequency blow-up relative to the lidar.
 
 ### Directional spectrum
 
