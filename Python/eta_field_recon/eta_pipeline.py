@@ -22,12 +22,12 @@ bare wall-clock number, so it tracks freqs_cwt if you change the band.
 
 Pixel scale note
 ----------------
-`reconstruct_eta_field` needs `dx`, the GROUND pixel size in metres -- the
+`reconstruct_eta_field` needs `dx`, the GROUND pixel size in meters -- the
 projected spacing of one output sample on the water, NOT the sensor pixel
 pitch. The two differ by the imaging geometry (focal length, range to the
 surface) and, at pss's default "native" resolution, by a further factor of
 two (one Stokes vector per 2x2 super-pixel). The NetCDF file stores the
-sensor `pixel_pitch` (micrometres) but not a focal length, so this driver
+sensor `pixel_pitch` (micrometers) but not a focal length, so this driver
 does NOT try to infer the ground dx. You must pass `ground_dx_m` explicitly.
 A typical way to get it:
 
@@ -123,6 +123,7 @@ def reconstruct_eta_from_record(
     spatial_pad_frac: float = 0.10,
     temporal_window: str = "tukey",
     temporal_alpha: float = 0.25,
+    aperture_diameter_m: float | None = None,
     verbose: bool = True,
 ) -> PipelineResult:
     """Reconstruct eta(x, y, t) from a multi-frame NetCDF DoFP record.
@@ -136,7 +137,7 @@ def reconstruct_eta_from_record(
     Args:
         path : NetCDF record. Either a (time, x, y) stack or a single 2-D
             frame. A single frame is always too short for the long-wave path.
-        ground_dx_m : GROUND pixel size in metres of one reconstructed
+        ground_dx_m : GROUND pixel size in meters of one reconstructed
             sample (see the module docstring -- this is NOT the sensor pixel
             pitch). Required when orthorectify=False. When orthorectify=True
             it is computed from the acquisition optics and may be left None
@@ -168,6 +169,10 @@ def reconstruct_eta_from_record(
             the empirical-gain reference for every frame.
         spatial_alpha, spatial_pad_frac, temporal_window, temporal_alpha :
             forwarded to `reconstruct_eta_field`.
+        aperture_diameter_m : diameter (m) of the centered circular aperture
+            over which the spatial-mean slope is formed for the long-wave
+            inversion; forwarded to `reconstruct_eta_field`. Default None
+            (full frame).
         verbose : print progress.
 
     Returns:
@@ -367,6 +372,7 @@ def reconstruct_eta_from_record(
         dx=ground_dx_m, fs=fs_hz, downsample=downsample,
         spatial_alpha=spatial_alpha, spatial_pad_frac=spatial_pad_frac,
         temporal_window=temporal_window, temporal_alpha=temporal_alpha,
+        aperture_diameter_m=aperture_diameter_m,
         long_wave=long_wave, verbose=verbose,
     )
     if water_depth_m is not None:

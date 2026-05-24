@@ -36,7 +36,7 @@ front door that runs the whole raw-frames → slopes → η chain.
 from eta_field_recon import reconstruct_eta_field
 
 # slope_x_field, slope_y_field: (T, Ny, Nx) float arrays, units of radians
-# dx: pixel size in metres
+# dx: pixel size in meters
 # fs: frame rate in Hz
 
 eta_xyt, eta_long, eta_short, conf, diag = reconstruct_eta_field(
@@ -112,7 +112,7 @@ On a 256×256 input at downsample=4 (64×64 output), 1024 frames:
   do the same if you call `g2s` elsewhere.  Worth filing upstream.
 
 - The wavelet inverse uses an empirical calibration factor of 1.4383
-  (≈ √2) to compensate for an under-normalisation in the EWDM CWT
+  (≈ √2) to compensate for an under-normalization in the EWDM CWT
   round-trip.  This brings the amplitude to within ~1–3% across signal
   types and frequency grids; documented in `wavelet_core.py`.
 

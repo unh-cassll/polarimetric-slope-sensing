@@ -50,7 +50,7 @@ from pyGrad2Surf.g2s import g2s
 from scipy.signal.windows import tukey, hann
 from ewdm.wavelets import Morlet
 
-from .wavelet_core import _cwt, _inverse_cwt, lindisp_with_current
+from .wavelet_core import _cwt, _inverse_cwt, lindisp_with_current, krogstad_eta_coeffs
 
 
 def _make_2d_window(Ny, Nx, alpha):
@@ -69,6 +69,52 @@ def _make_temporal_window(T, kind, alpha):
     raise ValueError(f"unknown temporal window kind {kind!r}")
 
 
+def _circular_aperture_mask(Ny, Nx, dx, diameter_m):
+    """Centered circular aperture mask of a given physical diameter.
+
+    Returns a (Ny, Nx) boolean mask that is True for grid cells whose center
+    lies within `diameter_m / 2` of the grid center. Used to restrict the
+    spatial-mean slope (the long-wave inversion's input) to a centered
+    circular footprint rather than the full rectangular frame.
+
+    The diameter is in METRES and is evaluated on the grid whose spacing is
+    `dx` (the caller passes the downsampled spacing dx_ds, so the aperture is
+    specified in real-world units independent of the downsample factor).
+
+    A diameter that does not fit inside the frame is allowed -- the mask is
+    simply the largest centered disc that does fit, clipped by the frame
+    edges. If `diameter_m` is None, callers should skip masking entirely
+    (full-frame mean); this helper still returns an all-True mask in that
+    case for convenience.
+    """
+    if diameter_m is None:
+        return np.ones((Ny, Nx), dtype=bool)
+    if diameter_m <= 0:
+        raise ValueError(
+            f"aperture_diameter_m must be positive (or None for full frame); "
+            f"got {diameter_m!r}"
+        )
+    yc = (np.arange(Ny) - (Ny - 1) / 2.0) * dx
+    xc = (np.arange(Nx) - (Nx - 1) / 2.0) * dx
+    YY, XX = np.meshgrid(yc, xc, indexing='ij')
+    r = np.sqrt(XX ** 2 + YY ** 2)
+    return r <= (diameter_m / 2.0)
+
+
+def _aperture_spatial_mean(field_stack, mask):
+    """Spatial mean of a (T, Ny, Nx) stack over a boolean aperture mask.
+
+    Averages only the cells where `mask` is True, per frame, returning a
+    (T,) series. Equivalent to field_stack.mean(axis=(1, 2)) when the mask is
+    all-True.
+    """
+    if mask.all():
+        return field_stack.mean(axis=(1, 2))
+    m = mask[None, :, :]
+    n = float(mask.sum())
+    return (field_stack * m).sum(axis=(1, 2)) / n
+
+
 def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            freqs_cwt=None,
                            water_depth_m=100.0,
@@ -81,6 +127,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            temporal_window='tukey',
                            temporal_alpha=0.25,
                            long_wave=True,
+                           aperture_diameter_m=None,
                            verbose=True):
     """
     Reconstruct eta(x, y, t) from a stack of slope images.
@@ -112,6 +159,18 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         to resolve any long wave (see eta_pipeline.py, which
                         sets this from a physics-based record-length gate).
 
+        aperture_diameter_m : diameter (m) of a centered circular aperture
+                        over which the slope is averaged to form the spatial-
+                        mean slope series that drives the long-wave inversion.
+                        Default None = full frame (average over the entire
+                        downsampled grid, the original behavior). A finite
+                        value restricts the average to the largest centered
+                        disc of that diameter that fits in the frame, which is
+                        useful when only a central sub-region of the footprint
+                        is trustworthy (e.g. vignetting or grazing-edge
+                        artifacts near the frame boundary). Only affects the
+                        long-wave (eta_long) path; eta_short is unchanged.
+
         verbose       : print progress messages.
 
     Returns:
@@ -137,6 +196,11 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
     x_ds = (np.arange(Nx_d) - Nx_d/2.0) * dx_ds
     y_ds = (np.arange(Ny_d) - Ny_d/2.0) * dx_ds
 
+    # Centered circular aperture over which the spatial-mean slope is formed
+    # for the long-wave inversion. None -> full frame (all-True mask). Built
+    # once on the downsampled grid; reused in both long_wave branches.
+    aperture_mask = _circular_aperture_mask(Ny_d, Nx_d, dx_ds, aperture_diameter_m)
+
     if verbose:
         print(f"  reconstruct_eta_field:")
         print(f"    input : {T} frames of {Ny}x{Nx}, dx={dx*1000:.1f} mm")
@@ -146,6 +210,12 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
               f"reflection pad frac={spatial_pad_frac}")
         print(f"    temporal: {temporal_window!r}"
               f"{'/alpha='+str(temporal_alpha) if temporal_window=='tukey' else ''}")
+        if aperture_diameter_m is None:
+            print(f"    aperture: full frame "
+                  f"({int(aperture_mask.sum())} cells)")
+        else:
+            print(f"    aperture: circular D={aperture_diameter_m:.3f} m "
+                  f"({int(aperture_mask.sum())}/{Ny_d*Nx_d} cells)")
 
     # ------------------------------------------------------------------
     # eta_short(x, y, t): per-frame Harker-O'Leary integration with
@@ -188,8 +258,8 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
     if long_wave:
         if verbose:
             print(f"    computing eta_long(t) from spatial-mean slopes ...")
-        sx_mean = sx_ds.mean(axis=(1, 2))
-        sy_mean = sy_ds.mean(axis=(1, 2))
+        sx_mean = _aperture_spatial_mean(sx_ds, aperture_mask)
+        sy_mean = _aperture_spatial_mean(sy_ds, aperture_mask)
 
         # Detrend so the temporal window doesn't multiply a constant DC offset
         sx_mean = sx_mean - sx_mean.mean()
@@ -203,28 +273,11 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
 
         _, k_disp = lindisp_with_current(2*np.pi*freqs_cwt, water_depth_m, 0.0)
 
-        # Krogstad signed projection:
-        #   cos_th = |Wsx| / sqrt(|Wsx|^2 + |Wsy|^2)
-        #   sin_th = |Wsy| / sqrt(|Wsx|^2 + |Wsy|^2)
-        # with the sign of sin_th recovered from sign(Re(Wsy*conj(Wsx))).
-        # This avoids the 180-deg slope-only ambiguity by using the relative
-        # phase between Wsy and Wsx.
-        #
-        # Guard: np.sign(0) == 0, which would ZERO sin_th whenever Wsx (or the
-        # relative phase) vanishes -- e.g. a wave travelling exactly along the
-        # along-look axis, where Wsx == 0. That incorrectly annihilates the
-        # signal. When the relative phase is indeterminate there is simply no
-        # information to flip the sign, so we default it to +1 (keep the
-        # magnitude) rather than 0 (destroy it).
-        eps = 1e-30
-        mag = np.sqrt(np.abs(Wsx)**2 + np.abs(Wsy)**2) + eps
-        rel_sign = np.sign(np.real(Wsy * np.conj(Wsx)))
-        rel_sign = np.where(rel_sign == 0, 1.0, rel_sign)
-        cos_th = np.abs(Wsx) / mag
-        sin_th = (np.abs(Wsy) / mag) * rel_sign
-
-        W_eta = 1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
-        W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
+        # Krogstad signed projection of the slope CWT coefficients onto the
+        # elevation coefficients, via the dispersion-relation wavenumber.
+        # See eta_field_recon.wavelet_core.krogstad_eta_coeffs for the full
+        # derivation and the sign-guard rationale.
+        W_eta, cos_th, sin_th = krogstad_eta_coeffs(Wsx, Wsy, k_disp)
 
         eta_long = _inverse_cwt(W_eta, freqs_cwt, fs, mother)
     else:
@@ -234,8 +287,8 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         # Still expose the raw spatial-mean slopes for inspection; everything
         # downstream of the CWT is left as None so callers can tell the long
         # path was not run.
-        sx_mean = sx_ds.mean(axis=(1, 2))
-        sy_mean = sy_ds.mean(axis=(1, 2))
+        sx_mean = _aperture_spatial_mean(sx_ds, aperture_mask)
+        sy_mean = _aperture_spatial_mean(sy_ds, aperture_mask)
         sx_mean = sx_mean - sx_mean.mean()
         sy_mean = sy_mean - sy_mean.mean()
         sx_mean_w = sy_mean_w = None
@@ -257,6 +310,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         x_ds=x_ds, y_ds=y_ds, dx_ds=dx_ds,
         spatial_W=spatial_W, spatial_W_padded=spatial_W_padded,
         temporal_W=temporal_W,
+        aperture_mask=aperture_mask, aperture_diameter_m=aperture_diameter_m,
         pad_y=pad_y, pad_x=pad_x,
     )
     return eta_xyt, eta_long, eta_short, confidence, diag

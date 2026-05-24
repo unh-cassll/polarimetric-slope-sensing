@@ -123,7 +123,7 @@ def test_eta_long_matches_spatial_mean_of_eta_xyt(single_mode_slope_stack):
 
 
 def test_reconstruct_correlates_with_truth(single_mode_slope_stack):
-    """For a clean single-mode field, centre-pixel correlation with truth
+    """For a clean single-mode field, center-pixel correlation with truth
     should be high after the wavelet edge-of-record taper settles."""
     slope_x, slope_y, eta_true, p = single_mode_slope_stack
     eta_xyt, _, _, conf, _ = reconstruct_eta_field(
@@ -131,15 +131,15 @@ def test_reconstruct_correlates_with_truth(single_mode_slope_stack):
         water_depth_m=100.0, downsample=2, verbose=False,
     )
     T = p["T"]
-    # Centre pixel, in both truth (full-res) and recon (half-res)
+    # Center pixel, in both truth (full-res) and recon (half-res)
     Ny_t, Nx_t = eta_true.shape[1], eta_true.shape[2]
-    truth_centre = eta_true[:, Ny_t // 2, Nx_t // 2]
-    recon_centre = eta_xyt[:, eta_xyt.shape[1] // 2, eta_xyt.shape[2] // 2]
+    truth_center = eta_true[:, Ny_t // 2, Nx_t // 2]
+    recon_center = eta_xyt[:, eta_xyt.shape[1] // 2, eta_xyt.shape[2] // 2]
     # Confidence weighting addresses the temporal taper.
     w = conf[:, eta_xyt.shape[1] // 2, eta_xyt.shape[2] // 2]
     # Weighted correlation
-    tw = truth_centre * w
-    rw = recon_centre * w
+    tw = truth_center * w
+    rw = recon_center * w
     num = np.sum(tw * rw)
     den = np.sqrt(np.sum(tw**2) * np.sum(rw**2))
     corr_weighted = num / den
@@ -188,7 +188,7 @@ def test_diag_contains_expected_keys(single_mode_slope_stack):
 # ---------------------------------------------------------------------------
 
 def _synthetic_swell_stack(T=120, Ny=16, Nx=16, fs=10.0, f0=0.2, A=0.3):
-    """A single deep-water swell travelling +x, as a (T,Ny,Nx) slope stack."""
+    """A single deep-water swell traveling +x, as a (T,Ny,Nx) slope stack."""
     g = 9.806
     k0 = (2 * np.pi * f0) ** 2 / g
     t = np.arange(T) / fs
@@ -393,11 +393,38 @@ def test_run_epss_all_params_runs_eta():
 
 
 def test_run_epss_partial_params_raises():
-    """Some-but-not-all acquisition params -> clear error."""
-    frame = _bundled_raw_frame()
+    """Partial eta-stage GEOMETRY -> clear error.
+
+    Under the decoupled gate, fs and theta_i_mean_deg may be supplied alone
+    (they enable the empirical-gain path), so it is specifically a partial
+    set of the three geometry params (freeboard/pitch/focal) that must raise.
+    Uses a synthetic raw frame so it runs offline.
+    """
     from epss import run_epss
+    rng = np.random.RandomState(0)
+    frame = (1000 + 200 * rng.rand(16, 16)).astype(float)
+    # one geometry param without the other two -> all-or-nothing violation
     with pytest.raises(ValueError, match="all-or-nothing"):
-        run_epss(frame, fs=30.0, theta_i_mean_deg=30.0, verbose=False)
+        run_epss(frame, fs=30.0, theta_i_mean_deg=30.0, freeboard_m=23.0,
+                 verbose=False)
+
+
+def test_run_epss_fs_and_theta_alone_is_allowed():
+    """fs + theta_i without the full geometry is now valid (gain path only).
+
+    This is the contract change from decoupling fs/theta_i from the
+    eta-geometry all-or-nothing set: the call must NOT raise, must not run the
+    eta stage, and must return slope fields. (A short synthetic record means
+    no gain is auto-enabled, which is fine -- we are testing the gate, not the
+    gain.)
+    """
+    from epss import run_epss
+    rng = np.random.RandomState(1)
+    frame = (1000 + 200 * rng.rand(16, 16)).astype(float)
+    r = run_epss(frame, fs=30.0, theta_i_mean_deg=30.0, verbose=False)
+    assert r.eta_ran is False
+    assert r.eta_xyt is None
+    assert r.slope_x.shape[0] == 1
 
 
 def test_run_epss_empirical_gain_falls_back_without_theta_i():
@@ -452,7 +479,7 @@ def test_uniform_swell_tilt_survives_to_eta_long():
     k0 = (2 * np.pi * f0) ** 2 / g       # deep-water k
     A = 0.4                              # target elevation amplitude (m)
     t = np.arange(T) / fs
-    # along-look slope of a wave travelling +y: spatially uniform per frame,
+    # along-look slope of a wave traveling +y: spatially uniform per frame,
     # oscillating in time with amplitude A*k0.
     slope_t = A * k0 * np.sin(2 * np.pi * f0 * t)
     sx = np.zeros((T, Ny, Nx))

@@ -5,7 +5,7 @@ One function, `run_epss`, ties the whole chain together for in-memory data:
 
     raw DoFP frames  --(pss)-->  slope fields  --(optional ortho + eta)-->  eta(x,y,t)
 
-The behaviour scales with what you give it:
+The behavior scales with what you give it:
 
   * Pass only an array of raw frames -> every frame is reduced with `pss`
     and you get the stack of slope fields back. Nothing else runs.
@@ -48,6 +48,17 @@ from eta_field_recon.recon import reconstruct_eta_field
 from eta_field_recon.eta_pipeline import DEFAULT_MIN_PERIODS
 
 
+# Minimum record length (seconds) for the auto empirical-gain trigger. When no
+# explicit gain-reference frame is supplied, the empirical DoLP gain can still
+# be calibrated against a temporal-median background formed FROM the stack --
+# but only if the record is long enough that its median surface is plausibly
+# flat-on-average (the assumption the empirical gain rests on). Below this, a
+# stack-median is not a trustworthy flat reference, so no gain is applied. A
+# supplied mean/median frame bypasses this gate entirely (it can be used at any
+# record length). Overridable per call via `min_gain_seconds`.
+DEFAULT_MIN_GAIN_SECONDS = 30.0
+
+
 @dataclass
 class EpssResult:
     """Result of run_epss.
@@ -73,11 +84,26 @@ class EpssResult:
     eta_ran: bool = False        # whether the eta stage ran
     long_wave_ran: bool = False  # whether the long-wave inversion ran
     dx_m: float | None = None    # ground dx used (from orthorectification)
+    gain_mode: str | None = None # resolved gain mode actually used
+    gain_auto_median: bool = False  # True if the >=min_gain_seconds auto
+                                    # temporal-median reference was used
     notes: str = ""              # human-readable summary of what ran
 
 
-_ACQ_NAMES = ("fs", "theta_i_mean_deg", "freeboard_m", "pixel_pitch_m",
-              "focal_length_m")
+# The eta stage needs the full imaging geometry. These three are all-or-
+# nothing among themselves: supplying some but not all is an error, because
+# orthorectification and the dispersion-relation inversion each need the full
+# set to be physically meaningful.
+#
+# Two acquisition params are deliberately NOT in this set, because each is
+# meaningful on its own (independent of running eta):
+#   - fs               : sets the record duration, which gates the empirical-
+#                        gain auto-median trigger;
+#   - theta_i_mean_deg : the mean incidence angle, required by the empirical
+#                        DoLP gain itself.
+# Both may be supplied alone to enable the gain path without running eta. The
+# eta stage requires these two AND the full geometry set below.
+_ETA_GEOM_NAMES = ("freeboard_m", "pixel_pitch_m", "focal_length_m")
 
 
 def run_epss(
@@ -100,6 +126,7 @@ def run_epss(
     spatial_pad_frac: float = 0.10,
     temporal_window: str = "tukey",
     temporal_alpha: float = 0.25,
+    aperture_diameter_m: float | None = None,
     # pss reduction options (defaults match pss; all overridable)
     resolution: str = "native",
     method: str = "conv_demodulation",
@@ -107,6 +134,7 @@ def run_epss(
     n_water: float = 1.34,
     lab_gain: tuple[float, float] = (1.2185, 1.2197),
     gain_reference_frame=None,
+    min_gain_seconds: float = DEFAULT_MIN_GAIN_SECONDS,
     verbose: bool = True,
 ) -> EpssResult:
     """Reduce raw DoFP frames to slopes, and (optionally) reconstruct eta.
@@ -135,16 +163,33 @@ def run_epss(
 
         water_depth_m : depth for the dispersion relation (default 100 m,
             i.e. effectively deep water). Set to your actual depth in shallows.
-        camera_azimuth_deg : look azimuth (deg); recorded, axis-labelling only.
+        camera_azimuth_deg : look azimuth (deg); recorded, axis-labeling only.
         downsample, freqs_cwt, min_periods, force_long_wave,
-        spatial_alpha, spatial_pad_frac, temporal_window, temporal_alpha :
+        spatial_alpha, spatial_pad_frac, temporal_window, temporal_alpha,
+        aperture_diameter_m :
             forwarded to the eta reconstruction (see reconstruct_eta_field /
-            reconstruct_eta_from_record).
+            reconstruct_eta_from_record). aperture_diameter_m sets the
+            diameter (m) of the centered circular aperture over which the
+            spatial-mean slope is averaged for the long-wave inversion;
+            None (default) uses the full frame.
 
         resolution, method, gain_mode, n_water, lab_gain,
         gain_reference_frame : forwarded to pss.compute_slope_field for the
-            per-frame reduction. gain_mode defaults to "empirical" when a
-            gain_reference_frame is given, else "none".
+            per-frame reduction.
+        min_gain_seconds : minimum record length (s) for the empirical gain to
+            be auto-enabled WITHOUT an explicit reference frame. Default 30.
+            When gain_mode is None (the default), the empirical DoLP gain is
+            resolved as follows, given theta_i_mean_deg is present:
+              - an explicit gain_reference_frame -> empirical, any length
+                (fs is NOT needed in this case);
+              - else, record >= min_gain_seconds -> empirical, with the
+                reference formed as np.nanmedian over the supplied stack
+                (this branch needs fs to compute the record duration);
+              - else -> no gain (a single frame is never self-referenced).
+            Without theta_i_mean_deg, no empirical gain is applied. If fs is
+            None only the auto-median branch is unavailable; an explicit
+            reference frame still enables the gain. The resolved mode and
+            whether the auto-median was used are reported on EpssResult.
 
         verbose : print progress and the assumptions made.
 
@@ -162,38 +207,100 @@ def run_epss(
     T = frames.shape[0]
 
     # ------------------------------------------------------------------
-    # All-or-nothing gate on the acquisition parameters.
+    # Eta-stage gate.
+    #
+    # The eta stage (orthorectification + elevation inversion) runs only when
+    # the full imaging geometry, the mean incidence angle, AND the frame rate
+    # are all available:
+    #   - the three geometry params (_ETA_GEOM_NAMES) are all-or-nothing among
+    #     themselves -- supplying some but not all is an error;
+    #   - theta_i_mean_deg and fs are decoupled from that all-or-nothing set
+    #     because each is meaningful on its own (they enable the empirical-gain
+    #     path), so either may be supplied alone without running eta.
     # ------------------------------------------------------------------
-    acq = dict(fs=fs, theta_i_mean_deg=theta_i_mean_deg,
-               freeboard_m=freeboard_m, pixel_pitch_m=pixel_pitch_m,
-               focal_length_m=focal_length_m)
-    supplied = [n for n in _ACQ_NAMES if acq[n] is not None]
-    eta_ran = len(supplied) == len(_ACQ_NAMES)
-    if supplied and not eta_ran:
-        missing = [n for n in _ACQ_NAMES if acq[n] is None]
+    geom = dict(freeboard_m=freeboard_m, pixel_pitch_m=pixel_pitch_m,
+                focal_length_m=focal_length_m)
+    geom_supplied = [n for n in _ETA_GEOM_NAMES if geom[n] is not None]
+    geom_complete = len(geom_supplied) == len(_ETA_GEOM_NAMES)
+    if geom_supplied and not geom_complete:
+        missing = [n for n in _ETA_GEOM_NAMES if geom[n] is None]
         raise ValueError(
-            "The acquisition parameters (fs, theta_i_mean_deg, freeboard_m, "
-            "pixel_pitch_m, focal_length_m) are all-or-nothing: "
-            "orthorectification and the eta inversion need the full set. You "
-            f"supplied {supplied} but are missing {missing}. Either pass all "
-            "five to run the eta stage, or none to stop at the slope fields."
+            "The eta-stage geometry parameters (freeboard_m, pixel_pitch_m, "
+            "focal_length_m) are all-or-nothing: orthorectification and the "
+            "eta inversion need the full set. You supplied "
+            f"{geom_supplied} but are missing {missing}. Either pass all "
+            "three (plus theta_i_mean_deg and fs) to run the eta stage, or "
+            "none to stop at the slope fields. (theta_i_mean_deg and fs may "
+            "each be passed on their own to enable the empirical gain without "
+            "running eta.)"
         )
 
-    # gain mode default depends on whether a reference frame was given AND
-    # whether theta_i is available (empirical gain requires theta_i). If a
-    # reference frame is supplied without theta_i, empirical can't run, so we
-    # fall back to no gain rather than crashing deep in pss.
+    # Eta needs the full geometry PLUS theta_i and fs.
+    eta_ready = geom_complete and (theta_i_mean_deg is not None) and (fs is not None)
+    if geom_complete and not eta_ready:
+        missing_extra = [n for n, v in
+                         [("theta_i_mean_deg", theta_i_mean_deg), ("fs", fs)]
+                         if v is None]
+        raise ValueError(
+            "The eta-stage geometry is complete but the eta inversion also "
+            f"needs {missing_extra}. Pass them to run the eta stage."
+        )
+    eta_ran = eta_ready
+
+    # ------------------------------------------------------------------
+    # Gain-mode decision (empirical DoLP gain).
+    #
+    # The empirical gain needs (a) theta_i_mean_deg, and (b) a flat-on-average
+    # reference DoLP. There are two ways to get the reference, in priority
+    # order:
+    #   1. An explicit `gain_reference_frame` (a mean/median background frame).
+    #      Usable at ANY record length.
+    #   2. No explicit frame, but the record is long enough (>= min_gain_seconds)
+    #      that a temporal median formed FROM the stack is a trustworthy flat
+    #      reference. We compute nanmedian over the stack and use it.
+    # If neither holds (no frame, and short/over-unknown record), no gain is
+    # applied -- we never self-reference a single frame (see pss.gain).
+    #
+    # The >= min_gain_seconds test needs the record duration, which needs fs.
+    # On this array path fs may be None (it is an acquisition param), in which
+    # case the auto-median trigger is unavailable; an explicit frame still
+    # works.
+    # ------------------------------------------------------------------
+    record_seconds = (T / fs) if fs is not None else None
+    auto_median_used = False
     gain_note = ""
     if gain_mode is None:
-        if gain_reference_frame is not None and theta_i_mean_deg is not None:
-            gain_mode = "empirical"
-        elif gain_reference_frame is not None:
+        if theta_i_mean_deg is None:
             gain_mode = "none"
-            gain_note = (" (gain_reference_frame given but theta_i_mean_deg "
-                         "absent -> empirical gain not applied; pass "
-                         "theta_i_mean_deg to enable it)")
+            if gain_reference_frame is not None:
+                gain_note = (" (gain_reference_frame given but theta_i_mean_deg "
+                             "absent -> empirical gain not applied; pass "
+                             "theta_i_mean_deg to enable it)")
+        elif gain_reference_frame is not None:
+            # Explicit reference frame + theta_i -> empirical, any length.
+            gain_mode = "empirical"
+            gain_note = " (empirical; ref=supplied frame)"
+        elif record_seconds is not None and record_seconds >= min_gain_seconds:
+            # No explicit frame, but a long-enough record: form the temporal
+            # median across the stack and use it as the reference.
+            gain_reference_frame = np.nanmedian(frames, axis=0)
+            gain_mode = "empirical"
+            auto_median_used = True
+            gain_note = (f" (empirical; ref=auto nanmedian of {T} frames, "
+                         f"record {record_seconds:.1f}s >= "
+                         f"{min_gain_seconds:.0f}s)")
         else:
             gain_mode = "none"
+            if record_seconds is not None:
+                gain_note = (f" (no gain: record {record_seconds:.1f}s < "
+                             f"{min_gain_seconds:.0f}s and no reference frame; "
+                             f"a stack-median is not a trustworthy flat "
+                             f"reference below the threshold)")
+            else:
+                gain_note = (" (no gain: no reference frame and fs unknown, so "
+                             "the record-length trigger is unavailable; pass a "
+                             "gain_reference_frame or fs to enable empirical "
+                             "gain)")
 
     if verbose:
         print("run_epss:")
@@ -243,6 +350,7 @@ def run_epss(
         return EpssResult(
             slope_x=slope_x, slope_y=slope_y, slope_results=slope_results,
             eta_ran=False, long_wave_ran=False,
+            gain_mode=gain_mode, gain_auto_median=auto_median_used,
             notes="slope fields only; acquisition parameters not supplied.",
         )
 
@@ -287,6 +395,7 @@ def run_epss(
         dx=dx_m, fs=fs, water_depth_m=water_depth_m, downsample=downsample,
         spatial_alpha=spatial_alpha, spatial_pad_frac=spatial_pad_frac,
         temporal_window=temporal_window, temporal_alpha=temporal_alpha,
+        aperture_diameter_m=aperture_diameter_m,
         long_wave=long_wave, verbose=verbose,
     )
     if freqs_cwt is not None:
@@ -301,6 +410,144 @@ def run_epss(
         eta_xyt=eta_xyt, eta_long=eta_long, eta_short=eta_short,
         confidence=confidence, diag=diag, ortho=ortho,
         eta_ran=True, long_wave_ran=long_wave, dx_m=dx_m,
+        gain_mode=gain_mode, gain_auto_median=auto_median_used,
         notes=(f"eta reconstructed; long-wave "
+               f"{'ran' if long_wave else 'skipped (record too short)'}."),
+    )
+
+
+def run_epss_from_slopes(
+    slope_x,
+    slope_y,
+    dx_m: float,
+    fs: float,
+    *,
+    # eta-stage options (forwarded to reconstruct_eta_field)
+    water_depth_m: float = 100.0,
+    downsample: int = 4,
+    freqs_cwt: np.ndarray | None = None,
+    min_periods: float = DEFAULT_MIN_PERIODS,
+    force_long_wave: bool | None = None,
+    spatial_alpha: float = 0.1,
+    spatial_pad_frac: float = 0.10,
+    temporal_window: str = "tukey",
+    temporal_alpha: float = 0.25,
+    aperture_diameter_m: float | None = None,
+    verbose: bool = True,
+) -> EpssResult:
+    """Reconstruct eta(x, y, t) from ALREADY-ORTHORECTIFIED slope fields.
+
+    This is the entry point for the moving-platform workflow: the user has
+    computed slope fields from images taken on a moving platform and then
+    orthorectified them THEMSELVES onto a uniform ground grid (so the spatial
+    sampling is already uniform with a single known `dx_m`). There is nothing
+    left for `pss` to reduce and nothing for the static orthorectifier to do,
+    so this function skips straight to the elevation inversion.
+
+    Contrast with `run_epss`, which starts from raw DoFP frames and (when the
+    full acquisition geometry is supplied) performs the static
+    orthorectification itself. Use `run_epss` for fixed-platform raw frames;
+    use this function when you already hold uniform-grid slopes.
+
+    Slope convention
+    ----------------
+    `slope_x`, `slope_y` are the dimensionless surface slopes Sx = tan(tilt)
+    in the cross-look and along-look directions -- exactly what
+    `pss.compute_slope_field` emits (SlopeResult.Sx / .Sy) and what
+    `reconstruct_eta_field` consumes. NOT tilt angles in degrees or radians.
+
+    Args:
+        slope_x, slope_y : orthorectified slope fields, dimensionless
+            (tan of tilt). Either a single 2-D frame (Ny, Nx) or a stack
+            (T, Ny, Nx). A single frame is always too short for the long-wave
+            path (eta_long = 0).
+        dx_m : the uniform ground pixel size (m) of the orthorectified grid.
+            This is the true projected spacing of one slope sample on the
+            water surface; the user set it when they orthorectified.
+        fs : frame rate (Hz). Sets the record's time base and, with
+            `min_periods`/`freqs_cwt`, the long-wave length gate.
+
+        water_depth_m, downsample, freqs_cwt, min_periods, force_long_wave,
+        spatial_alpha, spatial_pad_frac, temporal_window, temporal_alpha,
+        aperture_diameter_m : forwarded to `reconstruct_eta_field` (see step-2
+            docs). aperture_diameter_m sets the diameter (m) of the centered
+            circular aperture over which the spatial-mean slope is averaged for
+            the long-wave inversion; None (default) uses the full frame.
+
+        verbose : print progress.
+
+    Returns:
+        EpssResult, with the eta fields populated. `slope_x`/`slope_y` echo the
+        (stacked) input; `slope_results` is empty (no pss reduction occurred);
+        `gain_mode` is None (gain is a raw->slope concern and does not apply to
+        pre-computed slopes); `ortho` is None (the caller orthorectified).
+    """
+    sx = np.asarray(slope_x, dtype=float)
+    sy = np.asarray(slope_y, dtype=float)
+    if sx.shape != sy.shape:
+        raise ValueError(
+            f"slope_x and slope_y must have the same shape; got {sx.shape} "
+            f"and {sy.shape}."
+        )
+    if sx.ndim == 2:
+        sx = sx[None]
+        sy = sy[None]
+    if sx.ndim != 3:
+        raise ValueError(
+            f"slopes must be (Ny, Nx) or (T, Ny, Nx); got shape {sx.shape}."
+        )
+    T = sx.shape[0]
+
+    # Replace any non-finite slopes (e.g. ortho no-data border) with 0 so g2s
+    # and the CWT receive finite input -- matching run_epss's handling of the
+    # static-ortho output.
+    sx = np.nan_to_num(sx, nan=0.0)
+    sy = np.nan_to_num(sy, nan=0.0)
+
+    # ------------------------------------------------------------------
+    # Length gate: does the record span enough of the lowest CWT frequency's
+    # period to attempt the long-wave inversion? Identical physics to run_epss
+    # and reconstruct_eta_from_record.
+    # ------------------------------------------------------------------
+    f_min = float(freqs_cwt.min()) if freqs_cwt is not None else 0.05
+    gate_threshold_s = min_periods / f_min
+    record_duration_s = T / fs
+    if force_long_wave is None:
+        long_wave = record_duration_s >= gate_threshold_s
+    else:
+        long_wave = bool(force_long_wave)
+
+    if verbose:
+        print("run_epss_from_slopes:")
+        print(f"  slopes      : {T} frame(s) of {sx.shape[1]}x{sx.shape[2]}, "
+              f"dx={dx_m*1000:.3f} mm (pre-orthorectified)")
+        gate_state = "enabled" if long_wave else "skipped (record too short)"
+        print(f"  length gate : record {record_duration_s:.2f} s vs threshold "
+              f"{gate_threshold_s:.2f} s -> long-wave {gate_state}")
+        if aperture_diameter_m is not None:
+            print(f"  aperture    : circular D={aperture_diameter_m:.3f} m")
+        print(f"  reconstructing eta ...")
+
+    recon_kwargs = dict(
+        dx=dx_m, fs=fs, water_depth_m=water_depth_m, downsample=downsample,
+        spatial_alpha=spatial_alpha, spatial_pad_frac=spatial_pad_frac,
+        temporal_window=temporal_window, temporal_alpha=temporal_alpha,
+        aperture_diameter_m=aperture_diameter_m,
+        long_wave=long_wave, verbose=verbose,
+    )
+    if freqs_cwt is not None:
+        recon_kwargs["freqs_cwt"] = freqs_cwt
+
+    eta_xyt, eta_long, eta_short, confidence, diag = reconstruct_eta_field(
+        sx, sy, **recon_kwargs
+    )
+
+    return EpssResult(
+        slope_x=sx, slope_y=sy, slope_results=[],
+        eta_xyt=eta_xyt, eta_long=eta_long, eta_short=eta_short,
+        confidence=confidence, diag=diag, ortho=None,
+        eta_ran=True, long_wave_ran=long_wave, dx_m=dx_m,
+        gain_mode=None, gain_auto_median=False,
+        notes=("eta reconstructed from pre-orthorectified slopes; long-wave "
                f"{'ran' if long_wave else 'skipped (record too short)'}."),
     )

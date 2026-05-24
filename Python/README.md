@@ -32,49 +32,126 @@ frame stack -> pss.compute_slope_field (per frame) -> slope_x_field, slope_y_fie
 
 Each can also be used standalone.
 
-## Top-level API — `run_epss` and `reconstruct_eta_from_record`
+## Top-level API — `run_epss`, `run_epss_from_slopes`, `reconstruct_eta_from_record`
 
-Two convenience entry points tie the whole chain together so you don't have
-to wire `pss` and `eta_field_recon` by hand.
+Three convenience entry points tie the whole chain together so you don't have
+to wire `pss` and `eta_field_recon` by hand. `run_epss` and
+`run_epss_from_slopes` are the in-memory front doors;
+`reconstruct_eta_from_record` is the on-disk (NetCDF) equivalent.
 
-**`epss.run_epss`** — the in-memory front door. Hand it an array of raw DoFP
-frames and it reduces every frame to a slope field; additionally hand it the
-acquisition geometry and it also orthorectifies and reconstructs η(x, y, t):
+### `epss.run_epss` — raw DoFP frames in (capability ladder)
+
+Hand `run_epss` an array of raw DoFP frames and it runs as far up the
+processing chain as the inputs you provide allow. Each tier is unlocked by
+adding optional arguments; you never have to ask for a stage explicitly.
+
+**Tier 0 — slope fields only (bare minimum).** Pass just the frames:
 
 ```python
 import numpy as np
 from epss import run_epss
 
 # frames: (T, H, W) raw DoFP stack (or a single (H, W) frame)
-
-# Frames only -> slope fields, nothing else:
 res = run_epss(frames)
-res.slope_x, res.slope_y          # (T, Ny, Nx) slope stack (rad)
+res.slope_x, res.slope_y          # (T, Ny, Nx) slope stack (tan of tilt)
+res.gain_mode                     # "none"
+res.eta_ran                       # False
+```
 
-# Frames + ALL FIVE acquisition params -> ortho + η reconstruction:
+**Tier 1 — empirical DoLP gain.** The empirical gain needs the mean incidence
+angle `theta_i_mean_deg` plus a flat-on-average reference DoLP. There are two
+ways to supply that reference:
+
+```python
+# (a) An explicit mean/median background frame -> empirical gain at ANY record
+#     length. fs is NOT needed here.
 res = run_epss(
     frames,
-    fs=30.0,                      # frame rate (Hz)
+    theta_i_mean_deg=30.0,
+    gain_reference_frame=median_frame,   # your temporal-median background
+)
+
+# (b) No reference frame, but a long-enough record (>= 30 s by default): the
+#     temporal median is formed FROM the stack automatically. This branch
+#     needs fs to convert frame count to seconds.
+res = run_epss(
+    frames,                       # e.g. 300 frames @ 10 Hz = 30 s
+    theta_i_mean_deg=30.0,
+    fs=10.0,
+)
+res.gain_mode                     # "empirical"
+res.gain_auto_median              # True for (b), False for (a)
+```
+
+The 30 s floor is overridable with `min_gain_seconds=...`. If neither a
+reference frame nor a long-enough record is available, no gain is applied —
+a single frame is never self-referenced (see *The three gain modes* below).
+
+**Tier 2 — full η(x, y, t) reconstruction (static platform).** Add the
+imaging geometry. The η stage runs orthorectification and the elevation
+inversion:
+
+```python
+res = run_epss(
+    frames,
+    fs=10.0,                      # frame rate (Hz)
     theta_i_mean_deg=30.0,        # mean incidence angle (deg)
     freeboard_m=23.0,             # camera height above the surface (m)
     pixel_pitch_m=3.45e-6,        # sensor pixel pitch (m)
     focal_length_m=0.075,         # lens focal length (m)
-    water_depth_m=15.0,
+    water_depth_m=15.0,           # optional
+    aperture_diameter_m=1.2,      # optional: circular slope-averaging aperture
     downsample=8,
 )
 res.eta_xyt, res.eta_long, res.eta_short, res.confidence   # elevation fields
 res.ortho.dx_m                    # the true ground dx, derived from the optics
 ```
 
-The five acquisition parameters are **all-or-nothing**: supply all five to
-run the η stage, none to stop at the slope fields. A partial set raises a
-clear error. The long-wave (mean-wave) inversion is itself gated on record
-length (a too-short record returns `eta_long = 0`); see below.
+**What gates what.** The three *geometry* parameters
+(`freeboard_m`, `pixel_pitch_m`, `focal_length_m`) are **all-or-nothing**:
+pass one without the others and it raises. The η stage needs those three
+**plus** `theta_i_mean_deg` **plus** `fs`. By contrast `theta_i_mean_deg` and
+`fs` may each be supplied on their own (they enable the Tier-1 gain path), so
+they are deliberately *not* part of the all-or-nothing geometry set. The
+long-wave (mean-wave) inversion is itself gated on record length — see below.
 
-**`eta_field_recon.reconstruct_eta_from_record`** — the same chain, but
-starting from a NetCDF record on disk rather than an in-memory array. It
-reads the acquisition geometry from the file, so with `orthorectify=True`
-the ground `dx` is derived automatically:
+| You provide | You get |
+|---|---|
+| frames | slope fields |
+| + `theta_i_mean_deg` + reference frame | + empirical gain (any length) |
+| + `theta_i_mean_deg` + `fs`, record ≥ `min_gain_seconds` | + empirical gain (auto median) |
+| + `theta_i_mean_deg` + `fs` + geometry trio | + orthorectification + η(x, y, t) |
+
+### `epss.run_epss_from_slopes` — orthorectified slopes in (moving platform)
+
+If you computed slope fields from a **moving platform** and orthorectified
+them yourself onto a uniform ground grid, there is nothing left for `pss` to
+reduce and nothing for the static orthorectifier to do. `run_epss_from_slopes`
+skips straight to the elevation inversion:
+
+```python
+from epss import run_epss_from_slopes
+
+res = run_epss_from_slopes(
+    slope_x, slope_y,             # (T, Ny, Nx), tan of tilt, dimensionless
+    dx_m=0.05,                    # the uniform ground pixel size you set
+    fs=10.0,                      # frame rate (Hz)
+    aperture_diameter_m=1.2,      # optional
+)
+res.eta_xyt, res.eta_long, res.long_wave_ran
+```
+
+The slope convention is the same one `pss` emits and `reconstruct_eta_field`
+consumes: `slope_x`/`slope_y` are the **dimensionless** surface slopes
+(tan of the tilt), not tilt angles in degrees or radians. Gain does not apply
+on this path (`res.gain_mode is None`) — the gain is a raw→slope concern and
+your slopes already exist. The long-wave length gate still applies.
+
+### `eta_field_recon.reconstruct_eta_from_record` — NetCDF record in
+
+The same chain as `run_epss`, but starting from a NetCDF record on disk rather
+than an in-memory array. It reads the acquisition geometry from the file, so
+with `orthorectify=True` the ground `dx` is derived automatically:
 
 ```python
 from eta_field_recon import reconstruct_eta_from_record
@@ -83,6 +160,7 @@ res = reconstruct_eta_from_record(
     "my_record.nc",
     orthorectify=True,                       # derive dx from the file's optics
     gain_reference_path="my_median.nc",      # empirical-gain reference
+    aperture_diameter_m=1.2,                 # optional
     downsample=8,
 )
 res.eta_xyt, res.eta_long, res.long_wave_ran, res.ortho.dx_m
@@ -596,7 +674,7 @@ from eta_field_recon import reconstruct_eta_field
 # slope_x_field, slope_y_field: (T, Ny, Nx) float arrays, slope in radians
 eta_xyt, eta_long, eta_short, conf, diag = reconstruct_eta_field(
     slope_x_field, slope_y_field,
-    dx=0.006,              # pixel size in metres
+    dx=0.006,              # pixel size in meters
     fs=10.0,               # frame rate in Hz
     water_depth_m=15.0,    # for the dispersion relation
     downsample=8,          # output is (T, Ny/8, Nx/8)

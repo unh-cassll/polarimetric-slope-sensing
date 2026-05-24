@@ -222,7 +222,7 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
     from netCDF4 import Dataset
 
     from eta_field_recon.wavelet_core import (
-        lindisp_with_current, _cwt, _inverse_cwt,
+        lindisp_with_current, _cwt, _inverse_cwt, krogstad_eta_coeffs,
     )
     from eta_field_recon.recon import _make_temporal_window
 
@@ -248,14 +248,7 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
     Wsy = _cwt(sy * win, freqs, fs, None).values
     _, k = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
 
-    eps = 1e-30
-    mag = np.sqrt(np.abs(Wsx) ** 2 + np.abs(Wsy) ** 2) + eps
-    rel_sign = np.sign(np.real(Wsy * np.conj(Wsx)))
-    rel_sign = np.where(rel_sign == 0, 1.0, rel_sign)   # indeterminate phase -> +1
-    cos_th = np.abs(Wsx) / mag
-    sin_th = (np.abs(Wsy) / mag) * rel_sign
-    W_eta = 1j * (cos_th * Wsx + sin_th * Wsy) / k[:, None]
-    W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
+    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k)
     eta_long = _inverse_cwt(W_eta, freqs, fs, None)
 
     return t, eta_long
