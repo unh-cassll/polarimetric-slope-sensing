@@ -160,7 +160,10 @@ def test_from_slopes_long_record_runs_long_wave():
                              verbose=False)
     assert r.eta_ran is True
     assert r.long_wave_ran is True
-    assert r.eta_xyt.shape[0] == sx.shape[0]
+    # default short_wave=False: no resolved field, eta_long carries the signal
+    assert r.eta_xyt is None
+    assert r.eta_short is None
+    assert r.eta_long.shape[0] == sx.shape[0]
     # gain is N/A on the slopes-in path
     assert r.gain_mode is None
     assert r.gain_auto_median is False
@@ -171,14 +174,24 @@ def test_from_slopes_long_record_runs_long_wave():
     assert np.std(r.eta_long) > 0
 
 
+def test_from_slopes_short_wave_opt_in_produces_field():
+    # Opting into short_wave produces the resolved field and combined eta_xyt.
+    sx, sy, dx, fs = _ortho_slope_stack()
+    r = run_epss_from_slopes(sx, sy, dx_m=dx, fs=fs, downsample=2,
+                             short_wave=True, verbose=False)
+    assert r.eta_xyt is not None
+    assert r.eta_short is not None
+    assert r.eta_xyt.shape[0] == sx.shape[0]
+
+
 def test_from_slopes_single_frame_gates_off_long_wave():
     sx, sy, dx, fs = _ortho_slope_stack()
     r = run_epss_from_slopes(sx[0], sy[0], dx_m=dx, fs=fs, downsample=2,
                              verbose=False)
     assert r.long_wave_ran is False
     assert np.allclose(r.eta_long, 0.0)
-    # single frame promoted to a length-1 stack
-    assert r.eta_xyt.shape[0] == 1
+    # single frame promoted to a length-1 stack (check via eta_long length)
+    assert r.eta_long.shape[0] == 1
 
 
 def test_from_slopes_aperture_threads_through():
@@ -212,10 +225,11 @@ def test_from_slopes_bad_ndim_raises():
 
 
 def test_from_slopes_nan_input_is_tolerated():
-    # NaNs (e.g. ortho no-data border) must be zeroed, not propagate.
+    # NaNs (e.g. ortho no-data border) must be zeroed, not propagate. Opt into
+    # short_wave so there is a resolved field to check for finiteness.
     sx, sy, dx, fs = _ortho_slope_stack(T=64)
     sx = sx.copy()
     sx[:, :2, :2] = np.nan
     r = run_epss_from_slopes(sx, sy, dx_m=dx, fs=fs, downsample=2,
-                             verbose=False)
+                             short_wave=True, verbose=False)
     assert np.isfinite(r.eta_xyt).all()

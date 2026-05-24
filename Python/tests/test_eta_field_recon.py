@@ -246,7 +246,8 @@ def test_pipeline_gate_skips_long_wave_on_single_frame_record():
     assert res.n_frames == 1
     assert res.record_duration_s < res.gate_threshold_s
     assert np.allclose(res.eta_long, 0.0)
-    assert np.allclose(res.eta_xyt, res.eta_short)
+    assert res.eta_xyt is None      # short_wave defaults off at entry points
+    assert res.eta_short is None
 
 
 def test_pipeline_force_long_wave_overrides_gate():
@@ -377,7 +378,8 @@ def test_run_epss_frames_only_returns_slopes():
 
 
 def test_run_epss_all_params_runs_eta():
-    """All five acquisition params -> ortho + eta."""
+    """All acquisition params -> ortho + eta. Default short_wave=False ships
+    eta_long but not the resolved field; opting in produces eta_xyt."""
     frame = _bundled_raw_frame()
     from epss import run_epss
     r = run_epss(
@@ -385,11 +387,18 @@ def test_run_epss_all_params_runs_eta():
         pixel_pitch_m=3.45e-6, focal_length_m=0.075,
         downsample=8, verbose=False)
     assert r.eta_ran is True
-    assert r.eta_xyt is not None
+    # default: no resolved short-wave field
+    assert r.eta_xyt is None
     assert r.ortho is not None and r.dx_m > 0
     # single frame -> long-wave gated off
     assert r.long_wave_ran is False
     assert np.allclose(r.eta_long, 0.0)
+    # opting into short_wave produces the field
+    r2 = run_epss(
+        frame, fs=30.0, theta_i_mean_deg=30.0, freeboard_m=23.0,
+        pixel_pitch_m=3.45e-6, focal_length_m=0.075,
+        downsample=8, short_wave=True, verbose=False)
+    assert r2.eta_xyt is not None
 
 
 def test_run_epss_partial_params_raises():
@@ -495,3 +504,34 @@ def test_uniform_swell_tilt_survives_to_eta_long():
     assert recovered_amp > 0.5 * A, (
         f"eta_long amplitude {recovered_amp:.3f} m collapsed vs target {A} m "
         f"-- the spatial-mean (swell) tilt was lost.")
+
+
+def test_short_wave_false_skips_field_returns_none():
+    """short_wave=False skips the g2s loop: eta_short and eta_xyt are None,
+    eta_long is still computed, and confidence/diag are intact."""
+    import numpy as np
+    from eta_field_recon import reconstruct_eta_field
+    rng = np.random.RandomState(0)
+    T, Ny, Nx, fs, dx = 128, 48, 48, 10.0, 0.05
+    t = np.arange(T) / fs
+    tilt = 0.02 * np.sin(2 * np.pi * 0.12 * t)
+    sx = np.broadcast_to(tilt[:, None, None], (T, Ny, Nx)).copy()
+    sx += 0.001 * rng.randn(T, Ny, Nx)
+    sy = 0.5 * sx
+
+    # short_wave on (default) vs off, same inputs
+    e_on, el_on, es_on, _, _ = reconstruct_eta_field(
+        sx, sy, dx=dx, fs=fs, downsample=2, long_wave=True,
+        short_wave=True, verbose=False)
+    e_off, el_off, es_off, conf, diag = reconstruct_eta_field(
+        sx, sy, dx=dx, fs=fs, downsample=2, long_wave=True,
+        short_wave=False, verbose=False)
+
+    # off: field outputs are None
+    assert e_off is None
+    assert es_off is None
+    # eta_long is identical whether or not the short-wave path ran
+    assert np.array_equal(el_on, el_off)
+    # confidence and diag still produced
+    assert conf is not None
+    assert diag["dx_ds"] == dx * 2

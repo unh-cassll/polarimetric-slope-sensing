@@ -279,7 +279,7 @@ def slope_inverted_elevation_spectrum(sx, sy, fs, seg_seconds=30.0,
     the observed slope FREQUENCIES imply under deep-water dispersion?"
 
     The g^2/(2 pi f)^4 factor amplifies low-frequency noise enormously (~10^4
-    at 0.04 Hz), so the result is band-limited to f >= f_min on return: bins
+    at 0.05 Hz), so the result is band-limited to f >= f_min on return: bins
     below f_min are set to NaN (not plotted) rather than displaying amplified
     noise. f_min default 0.08 Hz sits safely below the swell peak (~0.17 Hz).
 
@@ -460,13 +460,13 @@ def main(argv=None) -> int:
                         "(full 30 Hz), written so a notebook can recompute the "
                         "spectra. The lidar is left in its own committed file. "
                         "Default: pss_aperture_elevation.nc in the cwd.")
-    p.add_argument("--pss-fmin", type=float, default=0.06,
+    p.add_argument("--pss-fmin", type=float, default=0.05,
                    help="low-frequency cutoff (Hz) for ALL PSS elevation curves "
                         "(default: 0.06). The long-wave inversion has no content "
-                        "below its 0.04 Hz CWT floor and the 1/k (and slope-"
+                        "below its 0.05 Hz CWT floor and the 1/k (and slope-"
                         "inverted 1/k^2) dispersion division amplifies low-f "
                         "noise, so PSS curves are not plotted below this. 0.06 "
-                        "leaves a small margin above the 0.04 Hz floor. The "
+                        "matches the 0.05 Hz CWT floor of the inversion. The "
                         "lidar, which legitimately resolves lower, is NOT "
                         "clipped. Sits below the ~0.17 Hz swell peak.")
     p.add_argument("--time-decimate", type=int, default=3,
@@ -555,7 +555,7 @@ def main(argv=None) -> int:
     # grid is base.slope_x itself.
     sx_ds, sy_ds = base.slope_x, base.slope_y
     dx_ds = diag["dx_ds"]
-    freqs_cwt = np.linspace(0.04, 2.0, 80)           # reconstruct_eta_field default
+    freqs_cwt = np.linspace(0.05, 2.0, 80)           # reconstruct_eta_field default
     water_depth_m = 100.0                            # recon default (deep water)
 
     series = {}   # label -> eta_center series (for plotting)
@@ -636,7 +636,7 @@ def main(argv=None) -> int:
     def _clip_low(f, S, fmin):
         """Mask a PSS spectrum below fmin (set NaN) so it is not plotted there.
 
-        The long-wave inversion has no content below its 0.04 Hz CWT floor, and
+        The long-wave inversion has no content below its 0.05 Hz CWT floor, and
         the 1/k dispersion division inflates low-f slope noise, so PSS curves
         are not trustworthy below ~fmin. The lidar is exempt (it resolves
         lower). NaN values simply break the line; they do not draw at zero.

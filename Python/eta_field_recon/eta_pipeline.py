@@ -134,6 +134,7 @@ def reconstruct_eta_from_record(
     temporal_window: str = "tukey",
     temporal_alpha: float = 0.25,
     aperture_diameter_m: float | None = None,
+    short_wave: bool = False,
     return_slopes: bool = False,
     verbose: bool = True,
 ) -> PipelineResult:
@@ -202,6 +203,12 @@ def reconstruct_eta_from_record(
             over which the spatial-mean slope is formed for the long-wave
             inversion; forwarded to `reconstruct_eta_field`. Default None
             (full frame).
+        short_wave : if True, run the per-frame g2s integration to produce the
+            resolved short-wave field eta_short (and the combined eta_xyt);
+            forwarded to `reconstruct_eta_field`. Default False -- the cheap
+            path ships only the slope fields (via return_slopes) and eta_long,
+            skipping the expensive g2s loop. Set True when you need the
+            spatially-resolved elevation field.
         return_slopes : if True, attach the reduced (and, when
             orthorectify=True, orthorectified) slope stack and its ground dx
             to the result as `slope_x`, `slope_y`, `slope_dx_m`. This lets a
@@ -463,7 +470,7 @@ def reconstruct_eta_from_record(
         spatial_alpha=spatial_alpha, spatial_pad_frac=spatial_pad_frac,
         temporal_window=temporal_window, temporal_alpha=temporal_alpha,
         aperture_diameter_m=aperture_diameter_m,
-        long_wave=long_wave, verbose=verbose,
+        long_wave=long_wave, short_wave=short_wave, verbose=verbose,
     )
     if water_depth_m is not None:
         recon_kwargs["water_depth_m"] = water_depth_m

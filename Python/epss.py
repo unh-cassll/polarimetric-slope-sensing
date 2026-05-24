@@ -127,6 +127,7 @@ def run_epss(
     temporal_window: str = "tukey",
     temporal_alpha: float = 0.25,
     aperture_diameter_m: float | None = None,
+    short_wave: bool = False,
     # pss reduction options (defaults match pss; all overridable)
     resolution: str = "native",
     method: str = "conv_demodulation",
@@ -396,7 +397,7 @@ def run_epss(
         spatial_alpha=spatial_alpha, spatial_pad_frac=spatial_pad_frac,
         temporal_window=temporal_window, temporal_alpha=temporal_alpha,
         aperture_diameter_m=aperture_diameter_m,
-        long_wave=long_wave, verbose=verbose,
+        long_wave=long_wave, short_wave=short_wave, verbose=verbose,
     )
     if freqs_cwt is not None:
         recon_kwargs["freqs_cwt"] = freqs_cwt
@@ -433,6 +434,7 @@ def run_epss_from_slopes(
     temporal_window: str = "tukey",
     temporal_alpha: float = 0.25,
     aperture_diameter_m: float | None = None,
+    short_wave: bool = False,
     verbose: bool = True,
 ) -> EpssResult:
     """Reconstruct eta(x, y, t) from ALREADY-ORTHORECTIFIED slope fields.
@@ -533,7 +535,7 @@ def run_epss_from_slopes(
         spatial_alpha=spatial_alpha, spatial_pad_frac=spatial_pad_frac,
         temporal_window=temporal_window, temporal_alpha=temporal_alpha,
         aperture_diameter_m=aperture_diameter_m,
-        long_wave=long_wave, verbose=verbose,
+        long_wave=long_wave, short_wave=short_wave, verbose=verbose,
     )
     if freqs_cwt is not None:
         recon_kwargs["freqs_cwt"] = freqs_cwt

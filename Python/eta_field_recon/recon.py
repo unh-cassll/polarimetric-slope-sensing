@@ -127,6 +127,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            temporal_window='tukey',
                            temporal_alpha=0.25,
                            long_wave=True,
+                           short_wave=True,
                            aperture_diameter_m=None,
                            verbose=True):
     """
@@ -159,6 +160,18 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         to resolve any long wave (see eta_pipeline.py, which
                         sets this from a physics-based record-length gate).
 
+        short_wave    : if True (default) run the per-frame Harker-O'Leary g2s
+                        integration of slope -> eta_short(x, y, t), the
+                        spatially-resolved short-wave field, and combine it
+                        with eta_long into eta_xyt. If False, skip the g2s loop
+                        entirely (the expensive per-frame step): eta_short and
+                        eta_xyt are returned as None and only eta_long(t) is
+                        produced. The user-facing entry points (run_epss,
+                        run_epss_from_slopes, reconstruct_eta_from_record)
+                        default this to False so the cheap path ships just the
+                        slope fields and eta_long; callers that need the
+                        resolved field (e.g. the field-spectrum tool) opt in.
+
         aperture_diameter_m : diameter (m) of a centered circular aperture
                         over which the slope is averaged to form the spatial-
                         mean slope series that drives the long-wave inversion.
@@ -174,9 +187,11 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         verbose       : print progress messages.
 
     Returns:
-        eta_xyt   : (T, Ny_d, Nx_d) reconstructed elevation field.
-        eta_long  : (T,) long-wave (DC) time series.
-        eta_short : (T, Ny_d, Nx_d) zero-mean-per-frame short-wave field.
+        eta_xyt   : (T, Ny_d, Nx_d) reconstructed elevation field, or None if
+                    short_wave=False.
+        eta_long  : (T,) long-wave (DC) time series (zeros if long_wave=False).
+        eta_short : (T, Ny_d, Nx_d) zero-mean-per-frame short-wave field, or
+                    None if short_wave=False.
         confidence: (T, Ny_d, Nx_d) on [0, 1]: spatial_W x temporal_W.
         diag      : dict of intermediates (CWT coefficients, windows,
                     cropped coordinate vectors, etc.)
@@ -232,20 +247,26 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
     spatial_W_padded = _make_2d_window(Ny_p, Nx_p, alpha=spatial_alpha)
     spatial_W = spatial_W_padded[pad_y:pad_y+Ny_d, pad_x:pad_x+Nx_d]
 
-    eta_short = np.zeros_like(sx_ds, dtype=float)
-    if verbose:
-        print(f"    integrating slope -> eta_short per frame "
-              f"(padded {Ny_p}x{Nx_p}) ...")
-    for ti in range(T):
-        sx_p = np.pad(sx_ds[ti], ((pad_y, pad_y), (pad_x, pad_x)), mode='reflect')
-        sy_p = np.pad(sy_ds[ti], ((pad_y, pad_y), (pad_x, pad_x)), mode='reflect')
-        sx_pw = sx_p * spatial_W_padded
-        sy_pw = sy_p * spatial_W_padded
-        # CRITICAL: g2s mutates its inputs; pass copies.
-        eta_p = g2s(x_p.copy(), y_p.copy(), sx_pw.copy(), sy_pw.copy())
-        eta_c = eta_p[pad_y:pad_y+Ny_d, pad_x:pad_x+Nx_d]
-        eta_short[ti] = eta_c * spatial_W
-        eta_short[ti] -= eta_short[ti].mean()
+    if short_wave:
+        eta_short = np.zeros_like(sx_ds, dtype=float)
+        if verbose:
+            print(f"    integrating slope -> eta_short per frame "
+                  f"(padded {Ny_p}x{Nx_p}) ...")
+        for ti in range(T):
+            sx_p = np.pad(sx_ds[ti], ((pad_y, pad_y), (pad_x, pad_x)), mode='reflect')
+            sy_p = np.pad(sy_ds[ti], ((pad_y, pad_y), (pad_x, pad_x)), mode='reflect')
+            sx_pw = sx_p * spatial_W_padded
+            sy_pw = sy_p * spatial_W_padded
+            # CRITICAL: g2s mutates its inputs; pass copies.
+            eta_p = g2s(x_p.copy(), y_p.copy(), sx_pw.copy(), sy_pw.copy())
+            eta_c = eta_p[pad_y:pad_y+Ny_d, pad_x:pad_x+Nx_d]
+            eta_short[ti] = eta_c * spatial_W
+            eta_short[ti] -= eta_short[ti].mean()
+    else:
+        eta_short = None
+        if verbose:
+            print(f"    short_wave=False: skipping per-frame g2s integration "
+                  f"(eta_short and eta_xyt are None).")
 
     # ------------------------------------------------------------------
     # eta_long(t): temporal CWT of spatial-mean slope, Krogstad signed
@@ -298,7 +319,11 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
     # ------------------------------------------------------------------
     # Combine and confidence mask
     # ------------------------------------------------------------------
-    eta_xyt = eta_short + eta_long[:, None, None]
+    if short_wave:
+        eta_xyt = eta_short + eta_long[:, None, None]
+    else:
+        # No resolved short-wave field; the full 2-D elevation is not formed.
+        eta_xyt = None
     confidence = (spatial_W[None, :, :] * temporal_W[:, None, None]).astype(float)
 
     diag = dict(

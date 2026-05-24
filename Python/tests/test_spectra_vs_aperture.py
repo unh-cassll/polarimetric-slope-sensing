@@ -282,7 +282,7 @@ def test_eta_long_fast_path_matches_full_reconstruct():
         sx, sy, dx=dx, fs=fs, downsample=1, aperture_diameter_m=None,
         long_wave=True, verbose=False)
     full_diam = inscribed_diameter_m(diag)
-    freqs = np.linspace(0.04, 2.0, 80)   # matches reconstruct_eta_field default
+    freqs = np.linspace(0.05, 2.0, 80)   # matches reconstruct_eta_field default
 
     for frac in (0.5, 0.25):
         diam = frac * full_diam
