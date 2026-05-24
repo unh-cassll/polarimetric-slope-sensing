@@ -1,0 +1,10 @@
+# pss core
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+netCDF4>=1.6
+
+# eta_field_recon core
+xarray>=2023.1
+ewdm>=1.0
+pyGrad2Surf>=0.1
