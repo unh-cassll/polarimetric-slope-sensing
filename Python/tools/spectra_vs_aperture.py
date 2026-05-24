@@ -23,9 +23,14 @@ Pipeline
      the inscribed-circle diameter (min(frame width, height)) -- re-run only
      the (cheap) CWT-based long-wave inversion via reconstruct_eta_field with
      the corresponding aperture_diameter_m, yielding three eta_long(t) series.
-  4. Reconstruct the full elevation eta(x, y, t) = eta_short + eta_long and
-     take the frame-center elevation series for each aperture (eta_short is
-     aperture-independent; only the long-wave mean differs).
+  4. For three centered circular apertures -- full frame, 0.5x, and 0.25x of
+     the inscribed-circle diameter (min(frame width, height)) -- re-run only
+     the (cheap) CWT-based long-wave inversion via the aperture's spatial-mean
+     slope, yielding three eta_long(t) series. The per-frame g2s short-wave
+     integration is NOT run: the averaging aperture only affects the long-wave
+     inversion, and the resolved short-wave field is aperture-independent, so
+     it is excluded from this comparison (and skipping it avoids the expensive
+     g2s loop entirely). The aperture elevation series are thus eta_long only.
   5. Compute the omnidirectional frequency spectrum S(f) (Welch PSD, m^2/Hz)
      for each of the three series and for the full 10 min lidar elevation.
   5b. Compute the slope-inverted elevation spectrum (per-pixel, averaged over
@@ -324,16 +329,18 @@ def inscribed_diameter_m(diag) -> float:
 
 def _write_aperture_series(path, series_records, fs, dx_m, full_diam,
                            long_wave_ran):
-    """Write the per-aperture elevation time series to NetCDF.
+    """Write the per-aperture long-wave elevation time series to NetCDF.
 
-    One variable per aperture (eta_full, eta_0p5, eta_0p25), each the
-    frame-center elevation series at the full frame rate, plus a shared time
-    vector and metadata (aperture diameter, fs, ground dx). A notebook can
-    open this alongside the committed lidar file and recompute the spectra.
+    One variable per aperture (eta_full, eta_0p5, eta_0p25), each the long-wave
+    (spatial-mean slope inverted) elevation series eta_long(t) for that
+    averaging aperture, at the full frame rate, plus a shared time vector and
+    metadata (aperture diameter, fs, ground dx). The resolved short-wave field
+    is aperture-independent and is not included. A notebook can open this
+    alongside the committed lidar file and recompute the spectra.
 
     Args:
         path : output .nc path.
-        series_records : list of (frac, diameter_m, eta_center) tuples.
+        series_records : list of (frac, diameter_m, eta_long) tuples.
         fs : frame rate (Hz) of the series.
         dx_m : ground pixel size (m) of the reconstructed grid.
         full_diam : inscribed-circle diameter (m) of the full-frame aperture.
@@ -369,7 +376,8 @@ def _write_aperture_series(path, series_records, fs, dx_m, full_diam,
             name = f"eta_{_suffix(frac)}"
             v = ds.createVariable(name, "f8", ("time",))
             v.units = "m"
-            v.long_name = (f"center elevation, {('full frame' if frac == 1.0 else f'{frac:g}x')} "
+            v.long_name = (f"long-wave elevation, "
+                           f"{('full frame' if frac == 1.0 else f'{frac:g}x')} "
                            f"aperture")
             v.aperture_diameter_m = float(diam)
             v.aperture_fraction = float(frac)
@@ -455,11 +463,14 @@ def main(argv=None) -> int:
                         "= lower frequencies resolved but fewer averages.")
     p.add_argument("--out", default="spectra_vs_aperture.png",
                    help="output figure path")
-    p.add_argument("--series-out", default="pss_aperture_elevation.nc",
+    p.add_argument("--series-out",
+                   default="examples/asit2019_aperture_elevation_60s.nc",
                    help="NetCDF path for the per-aperture elevation time series "
                         "(full 30 Hz), written so a notebook can recompute the "
                         "spectra. The lidar is left in its own committed file. "
-                        "Default: pss_aperture_elevation.nc in the cwd.")
+                        "Default: examples/asit2019_aperture_elevation_60s.nc "
+                        "(beside the other example artifacts; relative to the "
+                        "cwd, i.e. run from Python/).")
     p.add_argument("--pss-fmin", type=float, default=0.05,
                    help="low-frequency cutoff (Hz) for ALL PSS elevation curves "
                         "(default: 0.06). The long-wave inversion has no content "
@@ -514,7 +525,6 @@ def main(argv=None) -> int:
         gain_reference_path=median_path,
         downsample=args.downsample,
         reduce_downsample=args.reduce_downsample,
-        short_wave=True,          # the field-spectrum step needs eta_short
         return_slopes=True,
         verbose=True,
     )
@@ -531,23 +541,20 @@ def main(argv=None) -> int:
               "only the short-wave shape. (Use the full 60 s stack.)")
 
     # ------------------------------------------------------------------
-    # 3+4. eta_short (the per-frame g2s surface integration) is INDEPENDENT of
-    #      the averaging aperture -- only the long-wave mean eta_long(t)
-    #      depends on it. So we run the full reconstruct_eta_field ONCE (for
-    #      eta_short and the full-frame eta_long), then for the other apertures
-    #      recompute only the cheap 1-D long-wave inversion and add the SAME
-    #      center eta_short. This is bit-identical to three full passes but
-    #      skips two expensive g2s loops.
+    # 3+4. The averaging aperture only affects the long-wave (spatial-mean
+    #      slope) inversion eta_long(t); the resolved short-wave field is
+    #      aperture-INDEPENDENT and is NOT part of this comparison, so we skip
+    #      the (expensive) per-frame g2s integration entirely (short_wave=False).
+    #      One full-frame pass gives eta_long_full + diag (for dx_ds and the
+    #      inscribed diameter); the other apertures recompute only the cheap
+    #      1-D long-wave inversion.
     # ------------------------------------------------------------------
-    print("reconstructing eta (full pass: eta_short once + full-frame eta_long) ...")
-    eta_xyt, eta_long_full, eta_short, conf, diag = reconstruct_eta_field(
+    print("reconstructing long-wave eta (full frame; g2s skipped) ...")
+    _, eta_long_full, _, _, diag = reconstruct_eta_field(
         base.slope_x, base.slope_y, dx=dx_m, fs=fs, downsample=1,
         aperture_diameter_m=None, long_wave=base.long_wave_ran,
-        short_wave=True, verbose=True)
+        short_wave=False, verbose=True)
 
-    Ny, Nx = eta_xyt.shape[1], eta_xyt.shape[2]
-    cy, cx = Ny // 2, Nx // 2
-    eta_short_center = eta_short[:, cy, cx]          # aperture-independent
     full_diam = inscribed_diameter_m(diag)
 
     # The downsampled slope grid and freqs the long-wave step operates on. The
@@ -558,8 +565,8 @@ def main(argv=None) -> int:
     freqs_cwt = np.linspace(0.05, 2.0, 80)           # reconstruct_eta_field default
     water_depth_m = 100.0                            # recon default (deep water)
 
-    series = {}   # label -> eta_center series (for plotting)
-    series_records = []   # (frac, diameter_m, eta_center) for the NetCDF writer
+    series = {}   # label -> eta_long series (for plotting)
+    series_records = []   # (frac, diameter_m, eta_long) for the NetCDF writer
     for frac in APERTURE_FRACTIONS:
         if frac == 1.0:
             eta_long = eta_long_full
@@ -577,11 +584,13 @@ def main(argv=None) -> int:
             eta_long = np.zeros(sx_ds.shape[0])
             label = f"PSS {frac:g}x (D={frac*full_diam:.2f} m, no long-wave)"
 
-        eta_center = eta_short_center + eta_long
-        series[label] = eta_center
-        series_records.append((frac, diam, eta_center))
-        print(f"  aperture {frac:>4g}x: eta_center std = "
-              f"{np.std(eta_center)*100:.2f} cm")
+        # The aperture series are the long-wave (mean-slope-inverted) elevation
+        # only; the resolved short-wave field is aperture-independent and is
+        # deliberately excluded (see comment above).
+        series[label] = eta_long
+        series_records.append((frac, diam, eta_long))
+        print(f"  aperture {frac:>4g}x: eta_long std = "
+              f"{np.std(eta_long)*100:.2f} cm")
 
     # ------------------------------------------------------------------
     # Write the aperture elevation time series (full fs) to NetCDF so a
