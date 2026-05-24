@@ -33,7 +33,7 @@ Pipeline
      --time-decimate to cut FFT cost):
        - slope-inverted elevation: the slope-component frequency spectra summed
          and converted to elevation via deep-water dispersion,
-         S_eta(f) = S_slope(f) * g^2 / (2 pi f)^4, band-limited to f >= --inv-fmin
+         S_eta(f) = S_slope(f) * g^2 / (2 pi f)^4, band-limited to f >= --pss-fmin
          because that compensation amplifies low-frequency noise as f^-4;
        - short-wave elevation field: the omnidirectional spectrum of the
          directly g2s-resolved eta_short(x, y, t) -- only waves resolved within
@@ -65,7 +65,7 @@ Run
     #   --stack {full,3s}   which Zenodo stack to reduce (default: full)
     #   --downsample N      output-grid subsample factor (default: 8)
     #   --seg-seconds S     Welch segment length in seconds (default: 30)
-    #   --inv-fmin F        low-f cutoff (Hz) for the slope-inverted spectrum
+    #   --pss-fmin F        low-f cutoff (Hz) for ALL PSS elevation curves
     #                       (default: 0.08)
     #   --time-decimate N   anti-aliased time decimation for field spectra
     #                       (default: 3, i.e. 30 Hz -> 10 Hz; 1 disables)
@@ -291,12 +291,14 @@ def main(argv=None) -> int:
                         "= lower frequencies resolved but fewer averages.")
     p.add_argument("--out", default="spectra_vs_aperture.png",
                    help="output figure path")
-    p.add_argument("--inv-fmin", type=float, default=0.08,
-                   help="low-frequency cutoff (Hz) for the slope-inverted "
-                        "elevation spectrum (default: 0.08). The g^2/(2 pi f)^4 "
-                        "compensation amplifies low-f noise enormously, so bins "
-                        "below this are not plotted. Sits below the ~0.17 Hz "
-                        "swell peak.")
+    p.add_argument("--pss-fmin", type=float, default=0.08,
+                   help="low-frequency cutoff (Hz) for ALL PSS elevation curves "
+                        "(default: 0.08). The long-wave inversion has no content "
+                        "below its 0.05 Hz CWT floor and the 1/k (and slope-"
+                        "inverted 1/k^2) dispersion division amplifies low-f "
+                        "noise, so PSS curves are not plotted below this. The "
+                        "lidar, which legitimately resolves lower, is NOT "
+                        "clipped. Sits below the ~0.17 Hz swell peak.")
     p.add_argument("--time-decimate", type=int, default=3,
                    help="decimate the slope stack in time by this factor "
                         "(anti-aliased) before the field spectra (default: 3, "
@@ -431,11 +433,11 @@ def main(argv=None) -> int:
           f"{fs_field:.0f} Hz) ...")
     f_inv, S_inv = slope_inverted_elevation_spectrum(
         sx_dec, sy_dec, fs_field, seg_seconds=args.seg_seconds,
-        f_min=args.inv_fmin)
+        f_min=args.pss_fmin)
     f_sw, S_sw = field_omnidirectional_spectrum(
         eta_short_dec, fs_field, seg_seconds=args.seg_seconds)
     print(f"  slope-inverted : {np.sum(np.isfinite(S_inv))} valid bins "
-          f"(f >= {args.inv_fmin} Hz)")
+          f"(f >= {args.pss_fmin} Hz)")
     print(f"  short-wave field: peak at "
           f"{f_sw[np.nanargmax(S_sw)]:.3f} Hz")
 
@@ -456,10 +458,23 @@ def main(argv=None) -> int:
 
     fig, ax = plt.subplots(figsize=(8.5, 6.0))
 
+    def _clip_low(f, S, fmin):
+        """Mask a PSS spectrum below fmin (set NaN) so it is not plotted there.
+
+        The long-wave inversion has no content below its 0.05 Hz CWT floor, and
+        the 1/k dispersion division inflates low-f slope noise, so PSS curves
+        are not trustworthy below ~fmin. The lidar is exempt (it resolves
+        lower). NaN values simply break the line; they do not draw at zero.
+        """
+        S = np.asarray(S, dtype=float).copy()
+        S[np.asarray(f) < fmin] = np.nan
+        return S
+
     pss_colors = ["#1f77b4", "#2ca02c", "#d62728"]   # full, 0.5x, 0.25x
     for (label, eta_c), color in zip(series.items(), pss_colors):
         f, S = omnidirectional_spectrum(eta_c, fs, seg_seconds=args.seg_seconds)
-        ax.loglog(f, S, color=color, lw=1.6, label=label)
+        ax.loglog(f, _clip_low(f, S, args.pss_fmin), color=color, lw=1.6,
+                  label=label)
 
     f_lid, S_lid = omnidirectional_spectrum(eta_lid, fs_lid,
                                             seg_seconds=args.seg_seconds)
@@ -467,11 +482,13 @@ def main(argv=None) -> int:
               label=f"lidar (10 min, {fs_lid:.0f} Hz)")
 
     # Two field-based spectra, distinct styles so they read apart from the
-    # solid aperture curves and the dashed lidar.
-    ax.loglog(f_sw, S_sw, color="#9467bd", lw=1.6, ls="-.",
-              label="PSS short-wave field (g2s, resolved)")
+    # solid aperture curves and the dashed lidar. The short-wave field is
+    # clipped at the shared PSS floor; the slope-inverted was already NaN'd
+    # below f_min in its helper.
+    ax.loglog(f_sw, _clip_low(f_sw, S_sw, args.pss_fmin), color="#9467bd",
+              lw=1.6, ls="-.", label="PSS short-wave field (g2s, resolved)")
     ax.loglog(f_inv, S_inv, color="#ff7f0e", lw=1.6, ls=":",
-              label=f"PSS slope-inverted (deep-water, f$\\geq${args.inv_fmin:g} Hz)")
+              label=f"PSS slope-inverted (deep-water, f$\\geq${args.pss_fmin:g} Hz)")
 
     ax.set_xlabel("frequency  $f$  (Hz)")
     ax.set_ylabel(r"elevation spectral density  $S(f)$  (m$^2$/Hz)")
