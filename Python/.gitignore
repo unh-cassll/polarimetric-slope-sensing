@@ -12,6 +12,10 @@ examples/*.nc
 # examples/_data.py:mean_wave_timeseries() to reconstruct eta_long(t) offline.
 !examples/asit2019_mean_slope_60s.nc
 
+# ... and the committed independent-validation artifact: the Riegl LD90-3
+# water-surface elevation series (built by tools/make_lidar_elevation_nc.py).
+!examples/asit2019_lidar_elevation_10min.nc
+
 # Python build / cache artifacts
 __pycache__/
 *.pyc

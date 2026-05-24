@@ -61,6 +61,10 @@ _MD5 = {
 # Committed derived artifact (produced by tools/precompute_mean_wave.py).
 MEAN_SLOPE_FILENAME = "asit2019_mean_slope_60s.nc"
 
+# Committed independent-validation artifact: Riegl LD90-3 water-surface
+# elevation (produced by tools/make_lidar_elevation_nc.py).
+LIDAR_ELEVATION_FILENAME = "asit2019_lidar_elevation_10min.nc"
+
 
 def _md5_of(path: Path, chunk: int = 1 << 20) -> str:
     h = hashlib.md5()
@@ -157,6 +161,47 @@ def mean_slope_path() -> Path:
             f"(see that script's header for details)."
         )
     return path
+
+
+def lidar_elevation_path() -> Path:
+    """Local path to the committed Riegl LD90-3 elevation artifact.
+
+    A small committed file (not on Zenodo). If missing, regenerate it with
+    tools/make_lidar_elevation_nc.py from the raw elevation array.
+    """
+    path = EXAMPLES_DIR / LIDAR_ELEVATION_FILENAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{LIDAR_ELEVATION_FILENAME} not found in {EXAMPLES_DIR}. It is "
+            f"the committed Riegl LD90-3 elevation reference; build it once "
+            f"with:\n"
+            f"    python tools/make_lidar_elevation_nc.py --input elev_m.npy\n"
+            f"(see that script's header for details)."
+        )
+    return path
+
+
+def lidar_elevation():
+    """Independent water-surface elevation ground truth (Riegl LD90-3).
+
+    Loads the committed 10-minute elevation series used to validate the PSS
+    long-wave reconstruction.
+
+    Returns:
+        (t, elev) : time vector (s, from acquisition start) and elevation (m),
+        both 1-D. NOTE: the lidar and the PSS stack start together but view
+        spatially offset points, so a propagation lag between this series and
+        eta_long(t) is expected -- cross-correlate to measure it rather than
+        assuming sample alignment (see the file's timing_note attribute).
+    """
+    import numpy as np
+    from netCDF4 import Dataset
+
+    path = lidar_elevation_path()
+    with Dataset(str(path)) as ds:
+        elev = np.asarray(ds.variables["elev_m"][...], dtype=float)
+        t = np.asarray(ds.variables["time"][...], dtype=float)
+    return t, elev
 
 
 def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = True):
