@@ -108,6 +108,75 @@ def test_seg_seconds_longer_than_record_falls_back(capsys):
     assert "shorter than the requested" in out
 
 
+# ---------------------------------------------------------------------------
+# Field-based spectra (per-pixel temporal Welch averaged over pixels)
+# ---------------------------------------------------------------------------
+
+def test_field_spectrum_peaks_and_units():
+    from spectra_vs_aperture import field_omnidirectional_spectrum
+    fs, T, Ny, Nx = 10.0, 1024, 12, 14
+    t = np.arange(T) / fs
+    f0 = 0.2
+    field = (0.3 * np.sin(2 * np.pi * f0 * t))[:, None, None] * np.ones((T, Ny, Nx))
+    f, S = field_omnidirectional_spectrum(field, fs, seg_seconds=51.2)
+    assert abs(f[np.argmax(S)] - f0) < 0.02
+    assert np.isfinite(S).all()
+
+
+def test_field_spectrum_averages_over_pixels():
+    # A field that is identical at every pixel must give the same spectrum as
+    # a single-pixel Welch of that series.
+    from spectra_vs_aperture import (field_omnidirectional_spectrum,
+                                     omnidirectional_spectrum)
+    fs, T = 10.0, 512
+    series = np.sin(2 * np.pi * 0.15 * np.arange(T) / fs)
+    field = series[:, None, None] * np.ones((T, 5, 6))
+    f1, S1 = field_omnidirectional_spectrum(field, fs, seg_seconds=51.2)
+    f2, S2 = omnidirectional_spectrum(series, fs, seg_seconds=51.2)
+    # field uses detrend='linear', omnidirectional removes mean only; for a
+    # zero-mean sinusoid these agree closely in shape
+    assert np.allclose(f1, f2)
+    assert abs(f1[np.argmax(S1)] - f2[np.argmax(S2)]) < 1e-9
+
+
+def test_slope_inverted_band_limited_below_fmin():
+    from spectra_vs_aperture import slope_inverted_elevation_spectrum
+    fs, T, Ny, Nx = 10.0, 1024, 8, 8
+    rng = np.random.RandomState(0)
+    sx = 0.01 * rng.randn(T, Ny, Nx)
+    sy = 0.01 * rng.randn(T, Ny, Nx)
+    f, S = slope_inverted_elevation_spectrum(sx, sy, fs, seg_seconds=51.2,
+                                             f_min=0.08)
+    # everything below f_min is NaN (not plotted), finite at/above
+    assert np.all(np.isnan(S[f < 0.08]))
+    assert np.any(np.isfinite(S[f >= 0.08]))
+
+
+def test_slope_inverted_recovers_deepwater_elevation():
+    # For a deep-water wave, the slope-inverted spectrum and the direct field
+    # spectrum of the matching elevation should agree in band-integrated
+    # variance to within the Welch windowing tolerance (~15%).
+    from spectra_vs_aperture import (slope_inverted_elevation_spectrum,
+                                     field_omnidirectional_spectrum)
+    g = 9.81
+    fs, T, Ny, Nx = 10.0, 2048, 6, 6
+    t = np.arange(T) / fs
+    comps = [(0.18, 0.4), (0.25, 0.3)]
+    eta = sum(a * np.cos(2 * np.pi * f * t + i) for i, (f, a) in enumerate(comps))
+    sx = sum(a * (2 * np.pi * f) ** 2 / g * np.cos(2 * np.pi * f * t + i)
+             for i, (f, a) in enumerate(comps))
+    ef = eta[:, None, None] * np.ones((T, Ny, Nx))
+    sf = sx[:, None, None] * np.ones((T, Ny, Nx))
+    sy = np.zeros_like(sf)
+    f_sw, S_sw = field_omnidirectional_spectrum(ef, fs, seg_seconds=102.4)
+    f_iv, S_iv = slope_inverted_elevation_spectrum(sf, sy, fs, seg_seconds=102.4,
+                                                   f_min=0.08)
+    band = (f_sw >= 0.1) & (f_sw < 0.4)
+    v_sw = _trapz(S_sw[band], f_sw[band])
+    v_iv = _trapz(np.nan_to_num(S_iv[band]), f_iv[band])
+    assert 0.85 < v_iv / v_sw < 1.20
+
+
 def test_inscribed_diameter_uses_min_side():
     # Build a minimal diag like reconstruct_eta_field returns: a non-square
     # mask and a known dx_ds. Inscribed diameter = min(Ny, Nx) * dx_ds.

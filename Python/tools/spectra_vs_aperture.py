@@ -28,7 +28,19 @@ Pipeline
      aperture-independent; only the long-wave mean differs).
   5. Compute the omnidirectional frequency spectrum S(f) (Welch PSD, m^2/Hz)
      for each of the three series and for the full 10 min lidar elevation.
-  6. Plot all four spectra on one log-log axis with labeled axes and legend.
+  5b. Compute two FIELD-based spectra (per-pixel temporal Welch, averaged over
+     all pixels; stacks first decimated in time, anti-aliased, by
+     --time-decimate to cut FFT cost):
+       - slope-inverted elevation: the slope-component frequency spectra summed
+         and converted to elevation via deep-water dispersion,
+         S_eta(f) = S_slope(f) * g^2 / (2 pi f)^4, band-limited to f >= --inv-fmin
+         because that compensation amplifies low-frequency noise as f^-4;
+       - short-wave elevation field: the omnidirectional spectrum of the
+         directly g2s-resolved eta_short(x, y, t) -- only waves resolved within
+         the imager footprint.
+  6. Plot all spectra on one log-log axis with labeled axes and legend. The
+     three aperture curves are solid, the lidar dashed, the short-wave field
+     dash-dot, and the slope-inverted dotted.
 
 "Full frame" aperture
 ---------------------
@@ -53,6 +65,10 @@ Run
     #   --stack {full,3s}   which Zenodo stack to reduce (default: full)
     #   --downsample N      output-grid subsample factor (default: 8)
     #   --seg-seconds S     Welch segment length in seconds (default: 30)
+    #   --inv-fmin F        low-f cutoff (Hz) for the slope-inverted spectrum
+    #                       (default: 0.08)
+    #   --time-decimate N   anti-aliased time decimation for field spectra
+    #                       (default: 3, i.e. 30 Hz -> 10 Hz; 1 disables)
     #   --out PATH          figure path (default: spectra_vs_aperture.png)
     #   --no-download       fail rather than download from Zenodo
 
@@ -66,7 +82,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.signal import welch
+from scipy.signal import welch, decimate
 
 # make examples/_data and the packages importable regardless of invocation
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -132,6 +148,79 @@ def omnidirectional_spectrum(eta, fs, seg_seconds=30.0, detrend="linear"):
               f"is limited to ~{fs/nps:.3f} Hz.")
     f, S = welch(eta - eta.mean(), fs=fs, nperseg=nps, detrend=detrend)
     return f, S
+
+
+# Deep-water gravity constant for the slope->elevation compensation.
+_G = 9.81
+
+
+def field_omnidirectional_spectrum(field, fs, seg_seconds=30.0):
+    """Omnidirectional frequency spectrum of a (T, Ny, Nx) field, per pixel.
+
+    Welch PSD along the TIME axis of every pixel independently, then averaged
+    over all pixels. This is the frequency spectrum a dense array of co-located
+    wave gauges would measure -- the omnidirectional elevation (or slope)
+    spectrum of the resolved field. Each pixel series is linearly detrended
+    (Welch detrend='linear'), which removes any static per-pixel offset/tilt
+    that would otherwise dump energy into the lowest frequency bins.
+
+    Args:
+        field : (T, Ny, Nx) stack (elevation in m, or slope dimensionless).
+        fs : sample rate (Hz).
+        seg_seconds : Welch segment length in seconds (see
+            omnidirectional_spectrum).
+
+    Returns:
+        (f, S) : frequency (Hz) and pixel-averaged PSD (units^2/Hz), 1-D.
+    """
+    field = np.asarray(field, dtype=float)
+    T = field.shape[0]
+    nps = int(min(round(seg_seconds * fs), T))
+    # welch along the time axis for every pixel at once, then average over space
+    f, S = welch(field, fs=fs, nperseg=nps, detrend="linear", axis=0)
+    S_omni = S.reshape(S.shape[0], -1).mean(axis=1)
+    return f, S_omni
+
+
+def slope_inverted_elevation_spectrum(sx, sy, fs, seg_seconds=30.0,
+                                      f_min=0.08):
+    """Elevation spectrum inferred from the slope fields' frequency content.
+
+    Forms the per-pixel omnidirectional frequency spectrum of each slope
+    component, sums them (S_sx + S_sy = the total slope-frequency PSD), and
+    converts to an elevation spectrum via the DEEP-WATER dispersion relation:
+
+        slope amplitude = k * elevation amplitude, with k = (2 pi f)^2 / g,
+        so  S_eta(f) = S_slope(f) / k^2 = S_slope(f) * g^2 / (2 pi f)^4.
+
+    This is distinct from the g2s-integrated short-wave elevation: it never
+    does the spatial surface integration; it asks "what elevation spectrum do
+    the observed slope FREQUENCIES imply under deep-water dispersion?"
+
+    The g^2/(2 pi f)^4 factor amplifies low-frequency noise enormously (~10^4
+    at 0.05 Hz), so the result is band-limited to f >= f_min on return: bins
+    below f_min are set to NaN (not plotted) rather than displaying amplified
+    noise. f_min default 0.08 Hz sits safely below the swell peak (~0.17 Hz).
+
+    Args:
+        sx, sy : (T, Ny, Nx) cross- and along-look slope stacks (dimensionless).
+        fs : sample rate (Hz).
+        seg_seconds : Welch segment length in seconds.
+        f_min : low-frequency cutoff (Hz); bins below are returned as NaN.
+
+    Returns:
+        (f, S_eta) : frequency (Hz) and compensated elevation PSD (m^2/Hz),
+        with S_eta = NaN for f < f_min and at f = 0.
+    """
+    f, S_sx = field_omnidirectional_spectrum(sx, fs, seg_seconds)
+    _, S_sy = field_omnidirectional_spectrum(sy, fs, seg_seconds)
+    S_slope = S_sx + S_sy
+
+    omega = 2.0 * np.pi * f
+    S_eta = np.full_like(S_slope, np.nan)
+    valid = (f >= f_min) & (omega > 0)
+    S_eta[valid] = S_slope[valid] * (_G ** 2) / (omega[valid] ** 4)
+    return f, S_eta
 
 
 def inscribed_diameter_m(diag) -> float:
@@ -202,6 +291,18 @@ def main(argv=None) -> int:
                         "= lower frequencies resolved but fewer averages.")
     p.add_argument("--out", default="spectra_vs_aperture.png",
                    help="output figure path")
+    p.add_argument("--inv-fmin", type=float, default=0.08,
+                   help="low-frequency cutoff (Hz) for the slope-inverted "
+                        "elevation spectrum (default: 0.08). The g^2/(2 pi f)^4 "
+                        "compensation amplifies low-f noise enormously, so bins "
+                        "below this are not plotted. Sits below the ~0.17 Hz "
+                        "swell peak.")
+    p.add_argument("--time-decimate", type=int, default=3,
+                   help="decimate the slope stack in time by this factor "
+                        "(anti-aliased) before the field spectra (default: 3, "
+                        "i.e. 30 Hz -> 10 Hz). Cuts the per-pixel FFT cost; the "
+                        "discarded high frequencies are above what the footprint "
+                        "resolves spatially anyway. Use 1 to disable.")
     p.add_argument("--no-download", action="store_true",
                    help="fail rather than download the stack from Zenodo")
     args = p.parse_args(argv)
@@ -305,6 +406,40 @@ def main(argv=None) -> int:
               f"{np.std(eta_center)*100:.2f} cm")
 
     # ------------------------------------------------------------------
+    # 4b. Two FIELD-based spectra (per-pixel temporal Welch, averaged over
+    #     pixels). These are resource-intensive (a Welch over every pixel), so
+    #     first decimate both stacks in time (anti-aliased) by --time-decimate
+    #     -- the discarded high frequencies are above what the footprint
+    #     resolves spatially anyway.
+    #       (1) slope-inverted elevation: S_eta(f) from the slope frequency
+    #           content via deep-water dispersion (g^2/(2 pi f)^4), band-limited.
+    #       (2) short-wave elevation field: the directly g2s-resolved eta_short.
+    # ------------------------------------------------------------------
+    td = max(1, args.time_decimate)
+    if td > 1:
+        print(f"decimating stacks in time by {td} ({fs:.0f} -> {fs/td:.0f} Hz, "
+              f"anti-aliased) for the field spectra ...")
+        sx_dec = decimate(sx_ds, td, axis=0, ftype="fir").astype(float)
+        sy_dec = decimate(sy_ds, td, axis=0, ftype="fir").astype(float)
+        eta_short_dec = decimate(eta_short, td, axis=0, ftype="fir").astype(float)
+        fs_field = fs / td
+    else:
+        sx_dec, sy_dec, eta_short_dec, fs_field = sx_ds, sy_ds, eta_short, fs
+
+    print(f"computing field spectra (per-pixel Welch over "
+          f"{eta_short_dec.shape[1]*eta_short_dec.shape[2]} pixels @ "
+          f"{fs_field:.0f} Hz) ...")
+    f_inv, S_inv = slope_inverted_elevation_spectrum(
+        sx_dec, sy_dec, fs_field, seg_seconds=args.seg_seconds,
+        f_min=args.inv_fmin)
+    f_sw, S_sw = field_omnidirectional_spectrum(
+        eta_short_dec, fs_field, seg_seconds=args.seg_seconds)
+    print(f"  slope-inverted : {np.sum(np.isfinite(S_inv))} valid bins "
+          f"(f >= {args.inv_fmin} Hz)")
+    print(f"  short-wave field: peak at "
+          f"{f_sw[np.nanargmax(S_sw)]:.3f} Hz")
+
+    # ------------------------------------------------------------------
     # 5. Lidar spectrum (full 10 min record).
     # ------------------------------------------------------------------
     t_lid, eta_lid = _data.lidar_elevation()
@@ -331,11 +466,18 @@ def main(argv=None) -> int:
     ax.loglog(f_lid, S_lid, color="k", lw=2.0, ls="--",
               label=f"lidar (10 min, {fs_lid:.0f} Hz)")
 
+    # Two field-based spectra, distinct styles so they read apart from the
+    # solid aperture curves and the dashed lidar.
+    ax.loglog(f_sw, S_sw, color="#9467bd", lw=1.6, ls="-.",
+              label="PSS short-wave field (g2s, resolved)")
+    ax.loglog(f_inv, S_inv, color="#ff7f0e", lw=1.6, ls=":",
+              label=f"PSS slope-inverted (deep-water, f$\\geq${args.inv_fmin:g} Hz)")
+
     ax.set_xlabel("frequency  $f$  (Hz)")
     ax.set_ylabel(r"elevation spectral density  $S(f)$  (m$^2$/Hz)")
     ax.set_title("Omnidirectional elevation spectrum vs averaging aperture")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=9, framealpha=0.9)
+    ax.legend(fontsize=8, framealpha=0.9)
     # Focus on the gravity-wave band; trim the empty decades.
     ax.set_xlim(0.03, max(fs, fs_lid) / 2.0)
 
