@@ -231,7 +231,8 @@ def lidar_elevation():
 
 
 def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = True,
-                         inverse_per_scale: bool = False):
+                         inverse_per_scale: bool = False,
+                         skirt_correct: bool = False):
     """Mean-wave (long-wave) elevation time series eta_long(t).
 
     Loads the committed spatial-mean slope series (sx_mean(t), sy_mean(t),
@@ -250,6 +251,7 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
 
     from eta_field_recon.wavelet_core import (
         lindisp_with_current, _cwt, _inverse_cwt, krogstad_eta_coeffs,
+        skirt_correction,
     )
     from eta_field_recon.recon import _make_temporal_window
 
@@ -275,7 +277,11 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
     Wsy = _cwt(sy * win, freqs, fs, None).values
     _, k = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
 
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k)
+    skirt_gain = None
+    if skirt_correct:
+        skirt_gain = skirt_correction(freqs, fs, k, T, None,
+                                      per_scale=inverse_per_scale)
+    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k, skirt_gain=skirt_gain)
     eta_long = _inverse_cwt(W_eta, freqs, fs, None, per_scale=inverse_per_scale)
 
     return t, eta_long

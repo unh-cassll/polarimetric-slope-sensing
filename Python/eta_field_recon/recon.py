@@ -50,7 +50,8 @@ from pyGrad2Surf.g2s import g2s
 from scipy.signal.windows import tukey, hann
 from ewdm.wavelets import Morlet
 
-from .wavelet_core import _cwt, _inverse_cwt, lindisp_with_current, krogstad_eta_coeffs
+from .wavelet_core import (_cwt, _inverse_cwt, lindisp_with_current,
+                           krogstad_eta_coeffs, skirt_correction)
 
 
 def _make_2d_window(Ny, Nx, alpha):
@@ -121,6 +122,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            downsample=4,
                            mother=None,
                            inverse_per_scale=False,
+                           skirt_correct=False,
                            # spatial windowing
                            spatial_alpha=0.1,
                            spatial_pad_frac=0.10,
@@ -148,6 +150,11 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         per-frequency reconstruction-gain calibration instead
                         of the single 1.4383 constant (see
                         wavelet_core._inverse_cwt).  Default False (unchanged).
+        skirt_correct : if True, apply the krogstad 1/k(omega) skirt
+                        correction (see wavelet_core.skirt_correction) so a
+                        unit monochromatic surface component reconstructs at
+                        unit amplitude.  Paired with inverse_per_scale.
+                        Default False (unchanged).
 
         spatial_alpha    : Tukey alpha for the 2-D slope window.
                            Default 0.1 (light taper).
@@ -303,7 +310,13 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         # elevation coefficients, via the dispersion-relation wavenumber.
         # See eta_field_recon.wavelet_core.krogstad_eta_coeffs for the full
         # derivation and the sign-guard rationale.
-        W_eta, cos_th, sin_th = krogstad_eta_coeffs(Wsx, Wsy, k_disp)
+        skirt_gain = None
+        if skirt_correct:
+            skirt_gain = skirt_correction(
+                freqs_cwt, fs, k_disp, T, mother,
+                per_scale=inverse_per_scale, temporal_alpha=temporal_alpha)
+        W_eta, cos_th, sin_th = krogstad_eta_coeffs(
+            Wsx, Wsy, k_disp, skirt_gain=skirt_gain)
 
         eta_long = _inverse_cwt(W_eta, freqs_cwt, fs, mother,
                                 per_scale=inverse_per_scale)
