@@ -120,6 +120,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            water_depth_m=100.0,
                            downsample=4,
                            mother=None,
+                           inverse_per_scale=False,
                            # spatial windowing
                            spatial_alpha=0.1,
                            spatial_pad_frac=0.10,
@@ -143,6 +144,10 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         downsample    : spatial subsample factor; output is (Ny/ds, Nx/ds).
                         Default 4 (e.g. 256->64).
         mother        : EWDM mother wavelet; default Morlet(6.0).
+        inverse_per_scale : if True, the long-wave inverse CWT uses the
+                        per-frequency reconstruction-gain calibration instead
+                        of the single 1.4383 constant (see
+                        wavelet_core._inverse_cwt).  Default False (unchanged).
 
         spatial_alpha    : Tukey alpha for the 2-D slope window.
                            Default 0.1 (light taper).
@@ -300,7 +305,8 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         # derivation and the sign-guard rationale.
         W_eta, cos_th, sin_th = krogstad_eta_coeffs(Wsx, Wsy, k_disp)
 
-        eta_long = _inverse_cwt(W_eta, freqs_cwt, fs, mother)
+        eta_long = _inverse_cwt(W_eta, freqs_cwt, fs, mother,
+                                per_scale=inverse_per_scale)
     else:
         if verbose:
             print(f"    long_wave=False: skipping eta_long(t) inversion "

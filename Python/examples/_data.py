@@ -230,7 +230,8 @@ def lidar_elevation():
     return t, elev
 
 
-def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = True):
+def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = True,
+                         inverse_per_scale: bool = False):
     """Mean-wave (long-wave) elevation time series eta_long(t).
 
     Loads the committed spatial-mean slope series (sx_mean(t), sy_mean(t),
@@ -275,6 +276,6 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
     _, k = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
 
     W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k)
-    eta_long = _inverse_cwt(W_eta, freqs, fs, None)
+    eta_long = _inverse_cwt(W_eta, freqs, fs, None, per_scale=inverse_per_scale)
 
     return t, eta_long

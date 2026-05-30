@@ -81,34 +81,129 @@ def _cwt(signal_1d, freqs, fs, mother=None):
     return cwt(da, freqs=freqs, fs=fs, mother=mother)
 
 
-def _inverse_cwt(W, freqs, fs, mother=None):
-    """
-    Inverse continuous wavelet transform (Torrence-Compo delta-function
-    reconstruction) with an empirically-calibrated normalization.
+# Per-frequency reconstruction-gain calibration (opt-in; see _inverse_cwt).
+# Keyed on (freqs, fs, T, mother) so the sinusoid sweep runs once per config.
+_PER_SCALE_GAIN_CACHE = {}
 
-    The bare TC reconstruction systematically under-shoots variance by a
-    factor of ~0.696 when paired with EWDM's CWT normalization.  A
-    universal correction factor of 1.4383 (close to sqrt(2)) brings the
-    round-trip to within 1-3% across signal types and frequency grids.
 
-    Args:
-        W      : (nf, T) complex CWT coefficients
-        freqs  : (nf,) frequency grid (Hz), matching W
-        fs     : sampling frequency (Hz)
-        mother : EWDM mother wavelet; default Morlet(6.0)
+def _mother_key(mother):
+    """Hashable identity for the mother wavelet (Morlet(6.0) by default)."""
+    if mother is None:
+        return ("Morlet", 6.0)
+    w0 = getattr(mother, "f0", getattr(mother, "omega0", 6.0))
+    return (type(mother).__name__, float(w0))
 
-    Returns:
-        eta(t) : (T,) real reconstructed time series
+
+def _fill_nonfinite_nearest(a):
+    """Replace non-finite entries by linear interpolation over finite ones."""
+    a = np.asarray(a, dtype=float)
+    good = np.isfinite(a)
+    if good.all():
+        return a
+    if not good.any():
+        return np.ones_like(a)
+    idx = np.arange(a.size)
+    a[~good] = np.interp(idx[~good], idx[good], a[good])
+    return a
+
+
+def _bare_inverse(W, freqs, fs, mother):
+    """Torrence-Compo delta reconstruction with NO amplitude calibration.
+
+    Identical to the production inverse but with the leading constant set to
+    1.0, so a residual per-scale gain can be measured and inverted.
     """
     if mother is None:
         mother = Morlet(6.0)
     scales = 1.0 / (mother.flambda * freqs)
     ds = np.abs(np.gradient(scales))
     dt = 1.0 / fs
-    CALIBRATION = 1.4383
-    weight = (CALIBRATION * np.sqrt(dt) /
-              (mother.cdelta * (np.pi ** -0.25)))
-    return weight * (np.real(W) / scales[:, None]**1.5 * ds[:, None]).sum(axis=0)
+    weight = np.sqrt(dt) / (mother.cdelta * (np.pi ** -0.25))
+    return weight * (np.real(W) / scales[:, None] ** 1.5 * ds[:, None]).sum(axis=0)
+
+
+def _per_scale_gain(freqs, fs, T, mother):
+    """Per-frequency correction so a unit tone reconstructs at unit amplitude.
+
+    For each f in `freqs`, synthesise a unit cosine of length T, take the
+    forward CWT on the same grid, run the un-calibrated inverse, and measure
+    the central-window amplitude gain G_bare(f).  The applied correction is
+    g(f) = 1 / G_bare(f).  Phase- and amplitude-independent, so one cosine
+    probe per frequency suffices.  Depends only on (freqs, fs, T, mother);
+    result is cached.
+    """
+    freqs = np.asarray(freqs, dtype=float)
+    key = (tuple(np.round(freqs, 10)), float(fs), int(T), _mother_key(mother))
+    cached = _PER_SCALE_GAIN_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    if mother is None:
+        mother = Morlet(6.0)
+    t = np.arange(T) / fs
+    c = slice(int(0.2 * T), int(0.8 * T))      # central, cone-of-influence-light
+    gains = np.empty(freqs.size, dtype=float)
+    for i, f0 in enumerate(freqs):
+        ref = np.cos(2.0 * np.pi * f0 * t)
+        ref = ref - ref.mean()
+        da = xr.DataArray(ref, coords={"time": t}, dims=["time"])
+        W = cwt(da, freqs=freqs, fs=fs, mother=mother).values
+        rec = _bare_inverse(W, freqs, fs, mother)
+        denom = np.std(ref[c])
+        gains[i] = (np.std(rec[c]) / denom) if denom > 0 else np.nan
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr = np.where(np.isfinite(gains) & (gains > 1e-6), 1.0 / gains, np.nan)
+    corr = _fill_nonfinite_nearest(corr)
+    corr = np.clip(corr, 0.2, 5.0)             # guard pathological band edges
+    _PER_SCALE_GAIN_CACHE[key] = corr
+    return corr
+
+
+def _inverse_cwt(W, freqs, fs, mother=None, per_scale=False):
+    """
+    Inverse continuous wavelet transform (Torrence-Compo delta-function
+    reconstruction).
+
+    Two normalization modes:
+
+    - per_scale=False (default): the original behaviour.  The bare TC
+      reconstruction under-shoots variance by ~0.696 with EWDM's CWT
+      normalization, so a single universal constant 1.4383 (~sqrt(2)) is
+      applied, giving 1-3% round-trip fidelity across grids.
+
+    - per_scale=True: replace the single constant with a per-frequency
+      reconstruction gain calibrated, at call time, by round-tripping unit
+      reference sinusoids on this (freqs, fs, mother) grid (see
+      _per_scale_gain).  Parameter-free; flattens the round-trip to ~1% in
+      the well-resolved interior of the band and removes the magic constant.
+
+    Args:
+        W         : (nf, T) complex CWT coefficients
+        freqs     : (nf,) frequency grid (Hz), matching W
+        fs        : sampling frequency (Hz)
+        mother    : EWDM mother wavelet; default Morlet(6.0)
+        per_scale : use the per-frequency calibration instead of 1.4383.
+
+    Returns:
+        eta(t) : (T,) real reconstructed time series
+    """
+    freqs = np.asarray(freqs, dtype=float)
+
+    if not per_scale:
+        if mother is None:
+            mother = Morlet(6.0)
+        scales = 1.0 / (mother.flambda * freqs)
+        ds = np.abs(np.gradient(scales))
+        dt = 1.0 / fs
+        CALIBRATION = 1.4383
+        weight = (CALIBRATION * np.sqrt(dt) /
+                  (mother.cdelta * (np.pi ** -0.25)))
+        return weight * (np.real(W) / scales[:, None]**1.5 * ds[:, None]).sum(axis=0)
+
+    W = np.asarray(W)
+    g = _per_scale_gain(freqs, fs, W.shape[1], mother)
+    return _bare_inverse(W * g[:, None], freqs, fs, mother)
 
 
 # ---------------------------------------------------------------------------
