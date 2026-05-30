@@ -18,6 +18,7 @@ Provides:
 import numpy as np
 import xarray as xr
 from scipy import interpolate
+from scipy.signal.windows import tukey
 from ewdm.wavelets import cwt, Morlet
 
 
@@ -81,40 +82,135 @@ def _cwt(signal_1d, freqs, fs, mother=None):
     return cwt(da, freqs=freqs, fs=fs, mother=mother)
 
 
-def _inverse_cwt(W, freqs, fs, mother=None):
-    """
-    Inverse continuous wavelet transform (Torrence-Compo delta-function
-    reconstruction) with an empirically-calibrated normalization.
+# Per-frequency reconstruction-gain calibration (opt-in; see _inverse_cwt).
+# Keyed on (freqs, fs, T, mother) so the sinusoid sweep runs once per config.
+_PER_SCALE_GAIN_CACHE = {}
 
-    The bare TC reconstruction systematically under-shoots variance by a
-    factor of ~0.696 when paired with EWDM's CWT normalization.  A
-    universal correction factor of 1.4383 (close to sqrt(2)) brings the
-    round-trip to within 1-3% across signal types and frequency grids.
 
-    Args:
-        W      : (nf, T) complex CWT coefficients
-        freqs  : (nf,) frequency grid (Hz), matching W
-        fs     : sampling frequency (Hz)
-        mother : EWDM mother wavelet; default Morlet(6.0)
+def _mother_key(mother):
+    """Hashable identity for the mother wavelet (Morlet(6.0) by default)."""
+    if mother is None:
+        return ("Morlet", 6.0)
+    w0 = getattr(mother, "f0", getattr(mother, "omega0", 6.0))
+    return (type(mother).__name__, float(w0))
 
-    Returns:
-        eta(t) : (T,) real reconstructed time series
+
+def _fill_nonfinite_nearest(a):
+    """Replace non-finite entries by linear interpolation over finite ones."""
+    a = np.asarray(a, dtype=float)
+    good = np.isfinite(a)
+    if good.all():
+        return a
+    if not good.any():
+        return np.ones_like(a)
+    idx = np.arange(a.size)
+    a[~good] = np.interp(idx[~good], idx[good], a[good])
+    return a
+
+
+def _bare_inverse(W, freqs, fs, mother):
+    """Torrence-Compo delta reconstruction with NO amplitude calibration.
+
+    Identical to the production inverse but with the leading constant set to
+    1.0, so a residual per-scale gain can be measured and inverted.
     """
     if mother is None:
         mother = Morlet(6.0)
     scales = 1.0 / (mother.flambda * freqs)
     ds = np.abs(np.gradient(scales))
     dt = 1.0 / fs
-    CALIBRATION = 1.4383
-    weight = (CALIBRATION * np.sqrt(dt) /
-              (mother.cdelta * (np.pi ** -0.25)))
-    return weight * (np.real(W) / scales[:, None]**1.5 * ds[:, None]).sum(axis=0)
+    weight = np.sqrt(dt) / (mother.cdelta * (np.pi ** -0.25))
+    return weight * (np.real(W) / scales[:, None] ** 1.5 * ds[:, None]).sum(axis=0)
+
+
+def _per_scale_gain(freqs, fs, T, mother):
+    """Per-frequency correction so a unit tone reconstructs at unit amplitude.
+
+    For each f in `freqs`, synthesise a unit cosine of length T, take the
+    forward CWT on the same grid, run the un-calibrated inverse, and measure
+    the central-window amplitude gain G_bare(f).  The applied correction is
+    g(f) = 1 / G_bare(f).  Phase- and amplitude-independent, so one cosine
+    probe per frequency suffices.  Depends only on (freqs, fs, T, mother);
+    result is cached.
+    """
+    freqs = np.asarray(freqs, dtype=float)
+    key = (tuple(np.round(freqs, 10)), float(fs), int(T), _mother_key(mother))
+    cached = _PER_SCALE_GAIN_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    if mother is None:
+        mother = Morlet(6.0)
+    t = np.arange(T) / fs
+    c = slice(int(0.2 * T), int(0.8 * T))      # central, cone-of-influence-light
+    gains = np.empty(freqs.size, dtype=float)
+    for i, f0 in enumerate(freqs):
+        ref = np.cos(2.0 * np.pi * f0 * t)
+        ref = ref - ref.mean()
+        da = xr.DataArray(ref, coords={"time": t}, dims=["time"])
+        W = cwt(da, freqs=freqs, fs=fs, mother=mother).values
+        rec = _bare_inverse(W, freqs, fs, mother)
+        denom = np.std(ref[c])
+        gains[i] = (np.std(rec[c]) / denom) if denom > 0 else np.nan
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr = np.where(np.isfinite(gains) & (gains > 1e-6), 1.0 / gains, np.nan)
+    corr = _fill_nonfinite_nearest(corr)
+    corr = np.clip(corr, 0.2, 5.0)             # guard pathological band edges
+    _PER_SCALE_GAIN_CACHE[key] = corr
+    return corr
+
+
+def _inverse_cwt(W, freqs, fs, mother=None, per_scale=False):
+    """
+    Inverse continuous wavelet transform (Torrence-Compo delta-function
+    reconstruction).
+
+    Two normalization modes:
+
+    - per_scale=False (default): the original behaviour.  The bare TC
+      reconstruction under-shoots variance by ~0.696 with EWDM's CWT
+      normalization, so a single universal constant 1.4383 (~sqrt(2)) is
+      applied, giving 1-3% round-trip fidelity across grids.
+
+    - per_scale=True: replace the single constant with a per-frequency
+      reconstruction gain calibrated, at call time, by round-tripping unit
+      reference sinusoids on this (freqs, fs, mother) grid (see
+      _per_scale_gain).  Parameter-free; flattens the round-trip to ~1% in
+      the well-resolved interior of the band and removes the magic constant.
+
+    Args:
+        W         : (nf, T) complex CWT coefficients
+        freqs     : (nf,) frequency grid (Hz), matching W
+        fs        : sampling frequency (Hz)
+        mother    : EWDM mother wavelet; default Morlet(6.0)
+        per_scale : use the per-frequency calibration instead of 1.4383.
+
+    Returns:
+        eta(t) : (T,) real reconstructed time series
+    """
+    freqs = np.asarray(freqs, dtype=float)
+
+    if not per_scale:
+        if mother is None:
+            mother = Morlet(6.0)
+        scales = 1.0 / (mother.flambda * freqs)
+        ds = np.abs(np.gradient(scales))
+        dt = 1.0 / fs
+        CALIBRATION = 1.4383
+        weight = (CALIBRATION * np.sqrt(dt) /
+                  (mother.cdelta * (np.pi ** -0.25)))
+        return weight * (np.real(W) / scales[:, None]**1.5 * ds[:, None]).sum(axis=0)
+
+    W = np.asarray(W)
+    g = _per_scale_gain(freqs, fs, W.shape[1], mother)
+    return _bare_inverse(W * g[:, None], freqs, fs, mother)
 
 
 # ---------------------------------------------------------------------------
 # Krogstad signed-projection: slope CWT coefficients -> elevation CWT coeffs
 # ---------------------------------------------------------------------------
-def krogstad_eta_coeffs(Wsx, Wsy, k_disp):
+def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
     """Project slope-CWT coefficients onto elevation-CWT coefficients.
 
     Implements the Krogstad signed projection used by the long-wave (mean-
@@ -151,6 +247,10 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp):
                    along-look spatial-mean slopes.
         k_disp   : (nf,) dispersion-relation wavenumber (rad/m) on the CWT
                    frequency grid. Broadcast over the time axis.
+        skirt_gain : optional (nf,) per-frequency correction for the
+                   finite-bandwidth 1/k(omega) skirt reshaping (see
+                   skirt_correction).  If given, W_eta is multiplied by
+                   skirt_gain[:, None] before return.  Default None (unchanged).
 
     Returns:
         W_eta  : (nf, T) complex elevation CWT coefficients.
@@ -169,4 +269,88 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp):
     with np.errstate(divide="ignore", invalid="ignore"):
         W_eta = 1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
     W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
+    if skirt_gain is not None:
+        W_eta = W_eta * np.asarray(skirt_gain, dtype=float)[:, None]
     return W_eta, cos_th, sin_th
+
+
+# ---------------------------------------------------------------------------
+# Krogstad skirt-correction: compensate the finite-bandwidth 1/k(omega) bias
+# ---------------------------------------------------------------------------
+_SKIRT_CACHE = {}
+
+
+def skirt_correction(freqs, fs, k_disp, T, mother=None,
+                     per_scale=True, temporal_alpha=0.25):
+    """Per-frequency correction for the krogstad 1/k(omega) skirt reshaping.
+
+    krogstad_eta_coeffs divides the slope CWT coefficients by k(omega) per
+    frequency.  Because each Morlet wavelet has finite bandwidth, a
+    monochromatic surface component at f0 has CWT energy spread across
+    neighbouring scales; dividing that skirt by k(omega) (~f^2 in deep water)
+    reshapes it asymmetrically and biases the reconstructed elevation
+    amplitude.  This bias grows with frequency and is depth-dependent (via the
+    dispersion relation), so it is upstream of, and invisible to, _inverse_cwt.
+
+    This routine returns a per-frequency factor c(f) such that a unit
+    monochromatic surface component reconstructs at unit amplitude through the
+    full chain.  It is calibrated, at call time, by pushing unit reference
+    surface tones through the exact CWT -> (i/k) -> inverse pipeline on the
+    caller's own (freqs, fs, k_disp, mother) grid -- self-contained,
+    parameter-free, depth-aware through k_disp.  The reshaping acts on the
+    coefficient magnitude profile identically for any wave direction, so the
+    theta=0 calibration used here generalises across direction.
+
+    Multiply the krogstad elevation coefficients by c(f)[:, None] before the
+    inverse CWT (e.g. via krogstad_eta_coeffs(..., skirt_gain=c)), pairing
+    `per_scale` here with the inverse mode used at reconstruction time.
+
+    Args:
+        freqs          : (nf,) CWT frequency grid (Hz)
+        fs             : sampling frequency (Hz)
+        k_disp         : (nf,) dispersion wavenumber on `freqs` (rad/m); same
+                         array passed to krogstad_eta_coeffs (carries depth).
+        T              : record length (samples) the correction is used on.
+        mother         : EWDM mother wavelet; default Morlet(6.0).
+        per_scale      : inverse-CWT mode to pair with (must match runtime).
+        temporal_alpha : Tukey alpha matching the reconstruction window.
+
+    Returns:
+        c : (nf,) real correction; W_eta *= c[:, None] before _inverse_cwt.
+    """
+    freqs = np.asarray(freqs, dtype=float)
+    k_disp = np.asarray(k_disp, dtype=float)
+    key = (tuple(np.round(freqs, 10)), float(fs),
+           tuple(np.round(k_disp, 8)), int(T), bool(per_scale),
+           float(temporal_alpha), _mother_key(mother))
+    cached = _SKIRT_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    if mother is None:
+        mother = Morlet(6.0)
+    t = np.arange(T) / fs
+    win = tukey(T, alpha=temporal_alpha)
+    c = slice(int(0.2 * T), int(0.8 * T))
+    k_col = k_disp[:, None]
+
+    corr = np.empty(freqs.size, dtype=float)
+    for i, f0 in enumerate(freqs):
+        k0 = k_disp[i]
+        eta_ref = np.cos(2.0 * np.pi * f0 * t)
+        sx_ref = k0 * np.sin(2.0 * np.pi * f0 * t)        # theta=0 exact slope
+        sx_w = (sx_ref - sx_ref.mean()) * win
+        da = xr.DataArray(sx_w, coords={"time": t}, dims=["time"])
+        Wsx = cwt(da, freqs=freqs, fs=fs, mother=mother).values
+        with np.errstate(divide="ignore", invalid="ignore"):
+            W_eta = 1j * Wsx / k_col                      # krogstad op at theta=0
+        W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
+        rec = np.real(_inverse_cwt(W_eta, freqs, fs, mother, per_scale=per_scale))
+        denom = np.std(((eta_ref - eta_ref.mean()) * win)[c])
+        r = (np.std(rec[c]) / denom) if denom > 0 else np.nan
+        corr[i] = (1.0 / r) if (np.isfinite(r) and r > 1e-6) else np.nan
+
+    corr = _fill_nonfinite_nearest(corr)
+    corr = np.clip(corr, 0.2, 5.0)
+    _SKIRT_CACHE[key] = corr
+    return corr
