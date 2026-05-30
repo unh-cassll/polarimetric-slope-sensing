@@ -238,7 +238,7 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
     The elevation coefficient is the slope projection divided by the
     wavenumber (slope = d(eta)/dx -> in the wavelet domain a factor of i*k):
 
-        W_eta = 1j * (cos_th * Wsx + sin_th * Wsy) / k
+        W_eta = -1j * (cos_th * Wsx + sin_th * Wsy) / k
 
     Non-finite entries (e.g. from k = NaN at omega = 0) are set to 0.
 
@@ -267,7 +267,7 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
     # non-finite entries there, which we immediately zero out. Silence the
     # warning since this is by-design, not an error.
     with np.errstate(divide="ignore", invalid="ignore"):
-        W_eta = 1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
+        W_eta = -1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
     W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
     if skirt_gain is not None:
         W_eta = W_eta * np.asarray(skirt_gain, dtype=float)[:, None]
@@ -343,7 +343,7 @@ def skirt_correction(freqs, fs, k_disp, T, mother=None,
         da = xr.DataArray(sx_w, coords={"time": t}, dims=["time"])
         Wsx = cwt(da, freqs=freqs, fs=fs, mother=mother).values
         with np.errstate(divide="ignore", invalid="ignore"):
-            W_eta = 1j * Wsx / k_col                      # krogstad op at theta=0
+            W_eta = -1j * Wsx / k_col                      # krogstad op at theta=0
         W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
         rec = np.real(_inverse_cwt(W_eta, freqs, fs, mother, per_scale=per_scale))
         denom = np.std(((eta_ref - eta_ref.mean()) * win)[c])
