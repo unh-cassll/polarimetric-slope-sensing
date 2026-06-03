@@ -36,7 +36,7 @@ from eta_field_recon.recon import _make_temporal_window
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifact", type=Path,
-                    default=Path("examples/asit2019_mean_slope_60s.nc"))
+                    default=Path("_data/asit2019_mean_slope_60s.nc"))
     args = ap.parse_args()
 
     with Dataset(str(args.artifact)) as ds:

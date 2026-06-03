@@ -2,19 +2,19 @@
 #
 # The raw NetCDF files are NOT committed: they are downloaded on first use
 # from the Zenodo archive (DOI 10.5281/zenodo.20361229) and cached in
-# examples/, with md5 verification (see examples/_data.py). So ignore every
-# .nc in examples/ ...
-examples/*.nc
+# _data/, with md5 verification (see _data/__init__.py). So ignore every
+# .nc in _data/ ...
+_data/*.nc
 
 # ... EXCEPT the small committed derived artifact: the spatial-mean slope
 # time series for the full 60 s record, produced once by
-# tools/precompute_mean_wave.py and consumed by
-# examples/_data.py:mean_wave_timeseries() to reconstruct eta_long(t) offline.
-!examples/asit2019_mean_slope_60s.nc
+# _tools/precompute_mean_wave.py and consumed by
+# _data/__init__.py:mean_wave_timeseries() to reconstruct eta_long(t) offline.
+!_data/asit2019_mean_slope_60s.nc
 
 # ... and the committed independent-validation artifact: the Riegl LD90-3
-# water-surface elevation series (built by tools/make_lidar_elevation_nc.py).
-!examples/asit2019_lidar_elevation_10min.nc
+# water-surface elevation series (built by _tools/make_lidar_elevation_nc.py).
+!_data/asit2019_lidar_elevation_10min.nc
 
 # Python build / cache artifacts
 __pycache__/
@@ -24,3 +24,10 @@ __pycache__/
 build/
 dist/
 *.part
+
+# Virtual environments
+.venv/
+
+# Jupyter editor caches
+.virtual_documents/
+.ipynb_checkpoints/

@@ -28,12 +28,12 @@ def _data_module():
     in some other way.
     """
     try:
-        from examples import _data
+        import _data
         return _data
     except ModuleNotFoundError:
         repo = Path(__file__).resolve().parent.parent
         sys.path.insert(0, str(repo))
-        from examples import _data
+        import _data
         return _data
 
 

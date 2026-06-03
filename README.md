@@ -211,14 +211,14 @@ periods of the lowest CWT frequency (default 0.5 periods of 0.05 Hz, i.e.
 ```bash
 git clone <repo-url> pss && cd pss
 pip install -e .
-python examples/load_and_reduce.py            # reduces the bundled example frame
+python _examples/load_and_reduce.py            # reduces the bundled example frame
 ```
 
 …produces a 2×2 panel showing the gain-corrected Stokes components and the
 along-look / cross-look slope fields, reproducing the canonical example:
 
 ![Example output: gain-corrected Stokes parameters and slope fields from a
-2056×2464 ASIT2019 frame](examples/example_output.jpg)
+2056×2464 ASIT2019 frame](_figures/example_output.jpg)
 
 The bundled example reduces a single raw frame (resolved by
 `_data.frame_path()`, Zenodo name `asit_2019_raw_pol_frame0001.nc`) using the
@@ -227,7 +227,7 @@ background frame (`_data.median_path()`, `asit_2019_raw_pol_median.nc`), never
 against the frame itself. Run it with the dedicated script:
 
 ```bash
-python examples/load_and_reduce_with_median_gain.py
+python _examples/load_and_reduce_with_median_gain.py
 ```
 
 Reduction summary (printed to stdout, default native reduction,
@@ -278,7 +278,7 @@ waves) at 256×256 × 1024 frames, runs the reconstruction, and produces a
 diagnostic plot. Takes ~2 minutes (most of it is synthesis).
 
 ![Example output: synthetic eta truth vs reconstruction, plus PSD, time
-series, and confidence overlays](eta_field_recon/demo_eta_field.jpg)
+series, and confidence overlays](eta_field_recon/demo_eta_field.png)
 
 Demo reconstruction quality on this 4-mode synthetic field:
 
@@ -306,7 +306,7 @@ needed.
 
 The example data live in a Zenodo archive (CC-BY-4.0, DOI
 [10.5281/zenodo.20361229](https://doi.org/10.5281/zenodo.20361229)) and are
-**downloaded on first use**, not committed to the repository. `examples/_data.py`
+**downloaded on first use**, not committed to the repository. `_data/__init__.py`
 resolves each file locally if cached, else fetches it from Zenodo and verifies
 its md5 against the published checksum. The record holds four files:
 
@@ -326,9 +326,9 @@ full   = _data.stack_full_path()  # 10.1 GB
 ```
 
 The one data file that **is** committed is a small derived artifact,
-`examples/asit2019_mean_slope_60s.nc` (a few KB): the spatial-mean slope time
+`_data/asit2019_mean_slope_60s.nc` (a few KB): the spatial-mean slope time
 series `sx_mean(t)`, `sy_mean(t)` for the full 60 s record, produced once by
-`tools/precompute_mean_wave.py`. It lets `_data.mean_wave_timeseries()`
+`_tools/precompute_mean_wave.py`. It lets `_data.mean_wave_timeseries()`
 reconstruct the mean-wave elevation `eta_long(t)` live and offline, without the
 10 GB download:
 
@@ -336,10 +336,10 @@ reconstruct the mean-wave elevation `eta_long(t)` live and offline, without the
 t, eta_long = _data.mean_wave_timeseries()   # offline; uses the committed series
 ```
 
-A second small committed artifact, `examples/asit2019_lidar_elevation_10min.nc`
+A second small committed artifact, `_data/asit2019_lidar_elevation_10min.nc`
 (~105 KB), holds the independent validation ground truth: a 10-minute (6000-sample,
 10 Hz) water-surface-elevation series from a Riegl LD90-3 laser altimeter, built
-by `tools/make_lidar_elevation_nc.py`. It loads via `_data.lidar_elevation()`:
+by `_tools/make_lidar_elevation_nc.py`. It loads via `_data.lidar_elevation()`:
 
 ```python
 t_lidar, elev = _data.lidar_elevation()      # Riegl LD90-3 elevation (m)
@@ -357,7 +357,7 @@ and runs the full numerical regressions once the data are present.
 ## Repository layout
 
 ```
-pss/
+polarimetric-slope-sensing/
 ├── epss.py                               run_epss() top-level entry point
 ├── pss/                                  Polarimetric Slope Sensing package
 │   ├── __init__.py
@@ -377,28 +377,32 @@ pss/
 │   ├── demo_eta_field.jpg                rendered demo output
 │   ├── README.md                         package-specific quick reference
 │   └── HANDOFF.md                        full method derivation and dev notes
-├── examples/
+├── _examples/
 │   ├── load_and_reduce.py                pss demo (single frame; optional --median)
-│   ├── load_and_reduce_with_median_gain.py  E-PSS median-referenced gain demo
-│   ├── _data.py                          Zenodo resolver (download + md5);
+│   └── load_and_reduce_with_median_gain.py  E-PSS median-referenced gain demo
+├── _data/                               example data + Zenodo resolver package
+│   ├── __init__.py                       Zenodo resolver (download + md5);
 │   │                                     mean_wave_timeseries() + lidar_elevation()
 │   ├── asit2019_mean_slope_60s.nc        committed: spatial-mean slope series (few KB)
-│   ├── asit2019_lidar_elevation_10min.nc committed: Riegl LD90-3 elevation (~105 KB)
-│   └── example_output.jpg                rendered output of the pss demo
-├── tools/
+│   └── asit2019_lidar_elevation_10min.nc committed: Riegl LD90-3 elevation (~105 KB)
+├── _figures/
+│   ├── example_output.jpg                rendered output of the pss demo
+│   └── validation_eta_long_vs_lidar.png  eta_long vs lidar validation figure
+├── _tools/
 │   ├── precompute_mean_wave.py           one-off: build the committed mean-slope series
 │   ├── make_lidar_elevation_nc.py        one-off: package the Riegl lidar elevation
 │   ├── validate_eta_long_vs_lidar.py     cross-correlate eta_long vs lidar (lag + figure)
 │   └── diagnose_eta_long.py              localize eta_long energy/scaling on the artifact
-├── tests/                                pytest suite
+├── _tests/                               pytest suite
 │   ├── conftest.py
 │   ├── test_stokes.py
 │   ├── test_gain.py
 │   ├── test_fresnel.py
 │   ├── test_pipeline.py                  synthetic + NetCDF end-to-end
 │   ├── test_median_gain.py               stack reader + median-referenced gain
-│   └── test_eta_field_recon.py
-├── smoke_test.py                         synthetic-frame validation
+│   ├── test_eta_field_recon.py
+│   └── smoke_test.py                     synthetic-frame validation
+├── _original_routines_MATLAB/            original MATLAB routines (archived)
 ├── PSS_walkthrough.ipynb                 visual walkthrough notebook (grayscale)
 ├── pyproject.toml
 ├── requirements.txt                      (kept for non-pip workflows)
@@ -407,7 +411,7 @@ pss/
 ```
 
 The raw NetCDF files are **not** committed — they download from Zenodo on
-first use and cache in `examples/` (md5-verified), so `examples/*.nc` is
+first use and cache in `_data/` (md5-verified), so `_data/*.nc` is
 `.gitignore`'d. Two small derived artifacts are force-included in git as
 exceptions: `asit2019_mean_slope_60s.nc` (the spatial-mean slope series) and
 `asit2019_lidar_elevation_10min.nc` (the Riegl lidar validation series); see
@@ -415,19 +419,15 @@ the Input-data section.
 
 ## Install
 
-Python 3.10+. The Python package lives in the `Python/` subfolder of the
-repository.
+Python 3.10+. The installable Python project lives at the repository root.
 
 **Straight from GitHub (no clone needed):**
 
 ```bash
-pip install "git+https://github.com/unh-cassll/polarimetric-slope-sensing.git#subdirectory=Python"
+pip install "git+https://github.com/unh-cassll/polarimetric-slope-sensing.git"
 ```
 
-The `#subdirectory=Python` fragment tells pip the installable project is in
-that subfolder rather than the repo root (the repo root is the MATLAB
-project). The import name is `pss` even though the distribution is named
-`epss`:
+The import name is `pss` even though the distribution is named `epss`:
 
 ```python
 import pss
@@ -438,7 +438,7 @@ from pss import compute_slope_field
 
 ```bash
 git clone https://github.com/unh-cassll/polarimetric-slope-sensing.git
-cd polarimetric-slope-sensing/Python
+cd polarimetric-slope-sensing
 pip install -e .                       # editable install + core dependencies
 pip install -e ".[test]"               # add pytest + xarray for the test suite
 pip install -e ".[all]"                # everything
@@ -450,14 +450,14 @@ the `pip install` lines, or use a virtual environment.)
 Core dependencies are `numpy`, `scipy`, `matplotlib`, and `netCDF4`. If you
 prefer not to install the package, dependencies can be pulled from
 `requirements.txt` and the scripts can be run in-place
-(`python examples/load_and_reduce.py ...`).
+(`python _examples/load_and_reduce.py ...`).
 
 After `pip install -e .`, three console scripts are available on `$PATH`:
 
 | command                   | source                                      |
 |---------------------------|---------------------------------------------|
-| `pss-load-reduce`         | `examples/load_and_reduce.py`               |
-| `pss-load-reduce-median`  | `examples/load_and_reduce_with_median_gain.py` |
+| `pss-load-reduce`         | `_examples/load_and_reduce.py`               |
+| `pss-load-reduce-median`  | `_examples/load_and_reduce_with_median_gain.py` |
 | `pss-eta-demo`            | `eta_field_recon/demo_eta_field.py`         |
 
 ## Running the tests
@@ -570,33 +570,33 @@ result = compute_slope_field(
 
 ## CLI
 
-**`examples/load_and_reduce.py`** — reduces a single frame. Reads metadata
+**`_examples/load_and_reduce.py`** — reduces a single frame. Reads metadata
 from the file and runs with the file's suggested defaults; CLI flags
 override any metadata-supplied parameter. With no arguments it reduces the
 bundled example frame.
 
 ```bash
 # Bundled example frame (no --median -> no empirical gain applied)
-python examples/load_and_reduce.py
+python _examples/load_and_reduce.py
 
 # A specific file, picking a frame along the time axis
-python examples/load_and_reduce.py my_record.nc --time-index 12
+python _examples/load_and_reduce.py my_record.nc --time-index 12
 
 # Calibrate the empirical gain against a median frame; save the figure
-python examples/load_and_reduce.py --median my_median.nc \
+python _examples/load_and_reduce.py --median my_median.nc \
     --save out.png --no-show
 
 # Different Stokes method / lab gain
-python examples/load_and_reduce.py --method kernel_averaging --gain lab
+python _examples/load_and_reduce.py --method kernel_averaging --gain lab
 ```
 
-**`examples/load_and_reduce_with_median_gain.py`** — dedicated E-PSS demo:
+**`_examples/load_and_reduce_with_median_gain.py`** — dedicated E-PSS demo:
 reduce a frame with the empirical gain calibrated against a temporal-median
 background frame. With no arguments it uses the two bundled example files.
 
 ```bash
-python examples/load_and_reduce_with_median_gain.py
-python examples/load_and_reduce_with_median_gain.py my_frame.nc \
+python _examples/load_and_reduce_with_median_gain.py
+python _examples/load_and_reduce_with_median_gain.py my_frame.nc \
     --median my_median.nc --save out.png --no-show
 ```
 
@@ -716,14 +716,14 @@ directional estimator, current correction, streaming for long records).
 
 The long-wave reconstruction has been checked against an independent
 near-infrared laser altimeter (Riegl LD90-3) over the same ASIT2019 period.
-Running `tools/validate_eta_long_vs_lidar.py` reconstructs `eta_long(t)` from
+Running `_tools/validate_eta_long_vs_lidar.py` reconstructs `eta_long(t)` from
 the committed slope series and cross-correlates it against the committed lidar
 series, band-limited to 0.05–0.5 Hz, measuring the (timestamp-driven)
 alignment lag empirically. On the 60 s record the two agree to **~1 % in
 amplitude** (band-passed std 39.5 cm vs 38.9 cm) with a waveform correlation of
 **r ≈ 0.80** over the overlap window, and their elevation spectra overlap
 through the energetic wave band (matched peak near 0.17 Hz, matched variance).
-`tools/diagnose_eta_long.py` dumps the inversion stage by stage for a single
+`_tools/diagnose_eta_long.py` dumps the inversion stage by stage for a single
 artifact.
 
 A practical note on the wavelet formulation: because the inversion is a CWT
@@ -803,7 +803,7 @@ For a like-for-like comparison with the original MATLAB, reduce a frame
 with the fixed lab gain (the MATLAB original's behavior):
 
 ```bash
-python examples/load_and_reduce.py my_frame.nc --method bilinear --gain lab
+python _examples/load_and_reduce.py my_frame.nc --method bilinear --gain lab
 ```
 
 …produces panels visually indistinguishable from MATLAB's figure 1 output,

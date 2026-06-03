@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 # tools/ is not a package; add it to the path to import the script's helpers.
-_TOOLS = Path(__file__).resolve().parent.parent / "tools"
+_TOOLS = Path(__file__).resolve().parent.parent / "_tools"
 sys.path.insert(0, str(_TOOLS))
 
 from spectra_vs_aperture import (  # noqa: E402

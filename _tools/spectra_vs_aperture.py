@@ -92,7 +92,7 @@ from scipy.signal import welch, decimate, periodogram
 
 # make examples/_data and the packages importable regardless of invocation
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from examples import _data  # noqa: E402
+import _data  # noqa: E402
 from eta_field_recon.eta_pipeline import reconstruct_eta_from_record  # noqa: E402
 from eta_field_recon.recon import (  # noqa: E402
     reconstruct_eta_field,
@@ -464,13 +464,13 @@ def main(argv=None) -> int:
     p.add_argument("--out", default="spectra_vs_aperture.png",
                    help="output figure path")
     p.add_argument("--series-out",
-                   default="examples/asit2019_aperture_elevation_60s.nc",
+                   default="_data/asit2019_aperture_elevation_60s.nc",
                    help="NetCDF path for the per-aperture elevation time series "
                         "(full 30 Hz), written so a notebook can recompute the "
                         "spectra. The lidar is left in its own committed file. "
-                        "Default: examples/asit2019_aperture_elevation_60s.nc "
+                        "Default: _data/asit2019_aperture_elevation_60s.nc "
                         "(beside the other example artifacts; relative to the "
-                        "cwd, i.e. run from Python/).")
+                        "cwd, i.e. run from the repo root).")
     p.add_argument("--pss-fmin", type=float, default=0.05,
                    help="low-frequency cutoff (Hz) for ALL PSS elevation curves "
                         "(default: 0.06). The long-wave inversion has no content "

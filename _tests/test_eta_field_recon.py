@@ -230,7 +230,7 @@ def test_pipeline_gate_skips_long_wave_on_single_frame_record():
     """The bundled single-frame record is far too short -> long-wave skipped."""
     pytest.importorskip("netCDF4")
     from eta_field_recon import reconstruct_eta_from_record
-    from examples import _data
+    import _data
 
     try:
         frame = _data.frame_path(allow_download=False)
@@ -254,7 +254,7 @@ def test_pipeline_force_long_wave_overrides_gate():
     """force_long_wave=False is honored even when not otherwise needed."""
     pytest.importorskip("netCDF4")
     from eta_field_recon import reconstruct_eta_from_record
-    from examples import _data
+    import _data
 
     try:
         frame = _data.frame_path(allow_download=False)
@@ -316,7 +316,7 @@ def test_pipeline_orthorectify_derives_dx():
     """orthorectify=True derives dx from optics; ground_dx_m may be omitted."""
     pytest.importorskip("netCDF4")
     from eta_field_recon import reconstruct_eta_from_record
-    from examples import _data
+    import _data
 
     try:
         frame = _data.frame_path(allow_download=False)
@@ -336,7 +336,7 @@ def test_pipeline_orthorectify_derives_dx():
 def test_pipeline_requires_dx_when_not_orthorectifying():
     pytest.importorskip("netCDF4")
     from eta_field_recon import reconstruct_eta_from_record
-    from examples import _data
+    import _data
 
     try:
         frame = _data.frame_path(allow_download=False)
@@ -355,7 +355,7 @@ def _bundled_raw_frame():
     import pytest
     pytest.importorskip("netCDF4")
     from pss import read_netcdf_frame, apply_layout_from_meta
-    from examples import _data
+    import _data
     try:
         path = _data.frame_path(allow_download=False)
     except FileNotFoundError:
@@ -441,7 +441,7 @@ def test_run_epss_empirical_gain_falls_back_without_theta_i():
     import pytest
     pytest.importorskip("netCDF4")
     from pss import read_netcdf_frame, apply_layout_from_meta
-    from examples import _data
+    import _data
     try:
         frame_p = _data.frame_path(allow_download=False)
         median_p = _data.median_path(allow_download=False)

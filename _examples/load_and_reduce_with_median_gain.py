@@ -58,7 +58,6 @@ from pss import (
 )
 
 # Local import of the example-data resolver.
-sys.path.insert(0, str(_THIS_DIR))
 import _data  # noqa: E402
 
 # Downsample factor for display only; pipeline always runs on full resolution.

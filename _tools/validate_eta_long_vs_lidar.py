@@ -41,7 +41,7 @@ from scipy.signal import butter, filtfilt, correlate, correlation_lags
 
 # make examples/_data importable regardless of invocation
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from examples import _data  # noqa: E402
+import _data  # noqa: E402
 
 
 def _resample_uniform(t, y, fs_target):

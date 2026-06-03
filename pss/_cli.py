@@ -48,11 +48,11 @@ def _import_main_from(script_relpath: str, func_name: str = "main"):
 
 
 def load_and_reduce_main(argv: list[str] | None = None) -> int:
-    return _import_main_from("examples/load_and_reduce.py")(argv)
+    return _import_main_from("_examples/load_and_reduce.py")(argv)
 
 
 def load_and_reduce_median_gain_main(argv: list[str] | None = None) -> int:
-    return _import_main_from("examples/load_and_reduce_with_median_gain.py")(argv)
+    return _import_main_from("_examples/load_and_reduce_with_median_gain.py")(argv)
 
 
 def eta_demo_main(argv: list[str] | None = None) -> int:

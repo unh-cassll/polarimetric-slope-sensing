@@ -81,7 +81,7 @@ def main() -> None:
     ap.add_argument("--input", required=True, type=Path,
                     help="path to the full 60 s raw polarimetric stack (.nc)")
     ap.add_argument("--output", type=Path,
-                    default=Path("examples/asit2019_mean_slope_60s.nc"),
+                    default=Path("_data/asit2019_mean_slope_60s.nc"),
                     help="output NetCDF path (committed artifact)")
     ap.add_argument("--median", type=Path, default=None,
                     help="temporal-median frame for empirical gain (optional)")
