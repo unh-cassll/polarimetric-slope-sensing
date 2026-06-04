@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.signal import butter, filtfilt, correlate, correlation_lags
+from scipy.signal import butter, filtfilt
 
 # make examples/_data importable regardless of invocation
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -70,7 +70,11 @@ def main():
     ap.add_argument("--out", type=Path,
                     default=Path("validation_eta_long_vs_lidar.png"))
     ap.add_argument("--max-lag", type=float, default=30.0,
-                    help="max |lag| to search, seconds (default 30)")
+                    help="max |lag| to search about the frame-7001 anchor, "
+                         "seconds (default 30)")
+    ap.add_argument("--start-frame", type=int, default=7001,
+                    help="acquisition frame at which the PSS example record "
+                         "begins; sets the lidar anchor (default 7001)")
     ap.add_argument("--band", type=float, nargs=2, default=(0.05, 0.5),
                     metavar=("F_LO", "F_HI"),
                     help="band-pass (Hz) applied before correlating")
@@ -100,56 +104,50 @@ def main():
     lid_bp = _bandpass(lid_r, fs, f_lo, f_hi)
 
     # ------------------------------------------------------------------
-    # Cross-correlate over the overlapping window (length of the shorter,
-    # PSS, record). Slide the PSS window through the lidar within +/-max_lag.
+    # Anchor on the frame-7001 offset. The lidar runs the full record from the
+    # shared acquisition start, while the PSS example begins at start_frame,
+    # i.e. STACK_T0 seconds in (at the slope-series rate = frame rate). So
+    # eta_long sits ~STACK_T0 deep in the lidar, NOT at its start; slide it
+    # +/-max_lag about that anchor to measure the residual propagation lag
+    # (the lidar spot and the PSS footprint are ~20 m apart). eta_long is
+    # up-positive, so take the POSITIVE-correlation peak.
     # ------------------------------------------------------------------
+    stack_t0 = (args.start_frame - 1) / fs_eta
     n_eta = eta_bp.size
-    # lidar segment long enough to allow the lag search on both sides
     pad = int(args.max_lag * fs)
-    seg = lid_bp[:n_eta + pad] if lid_bp.size >= n_eta + pad else lid_bp
-    # normalized cross-correlation
+    i0 = int(round(stack_t0 * fs))
+    lo_i, hi_i = max(0, i0 - pad), min(lid_bp.size, i0 + n_eta + pad)
+    seg = lid_bp[lo_i:hi_i]
     a = (eta_bp - eta_bp.mean()) / (eta_bp.std() + 1e-30)
-    b = (seg - seg.mean()) / (seg.std() + 1e-30)
-    xc = correlate(b, a, mode="full") / min(a.size, b.size)
-    lags = correlation_lags(b.size, a.size, mode="full") / fs
-    keep = np.abs(lags) <= args.max_lag
-    lags_k, xc_k = lags[keep], xc[keep]
-    pk = int(np.argmax(xc_k))
+
+    def _zn(w):
+        return (w - w.mean()) / (w.std() + 1e-30)
+
+    offsets = np.arange(seg.size - n_eta + 1)
+    xc = np.array([np.dot(a, _zn(seg[o:o + n_eta])) / n_eta for o in offsets])
+    lags_k = (offsets - (i0 - lo_i)) / fs          # residual lag about the anchor
+    pk = int(np.argmax(xc))
+    xc_k = xc
     lag_peak = lags_k[pk]
-    r_peak = xc_k[pk]
+    r_peak = xc[pk]
     print(f"\ncross-correlation (band {f_lo}-{f_hi:.2f} Hz):")
-    print(f"  peak lag        = {lag_peak:+.2f} s "
-          f"(lidar leads if negative)")
-    print(f"  broadband corr  = {r_peak:.3f}  (over full slid window)")
+    print(f"  frame-7001 anchor = {stack_t0:.1f} s into the acquisition")
+    print(f"  residual lag      = {lag_peak:+.2f} s "
+          f"(lidar best match at {stack_t0 + lag_peak:.1f} s)")
+    print(f"  waveform corr     = {r_peak:.3f}")
 
     # ------------------------------------------------------------------
-    # Align both series by the measured lag and keep ONLY the genuine overlap
-    # window -- the span where both the PSS and the (shifted) lidar series
-    # actually have data. The correlation and std are recomputed over just
-    # this overlap, which is the honest comparison: outside it, one series is
-    # absent and only dilutes the broadband number.
+    # The aligned lidar window is the 60 s slice at the peak offset; eta_long
+    # fully overlaps it. Report correlation and amplitude there, on the
+    # absolute acquisition clock (t=0 at the shared start).
     # ------------------------------------------------------------------
-    # eta_bp lives on te = [0, (n_eta-1)/fs]. The lidar sample j sits at PSS
-    # time (j/fs - lag_peak) after alignment. Build a common index range.
-    te = np.arange(n_eta) / fs
-    tl_full = np.arange(lid_bp.size) / fs - lag_peak
-    t_start = max(te[0], tl_full[0])
-    t_stop = min(te[-1], tl_full[-1])
-    # sample the overlap on the eta grid
-    mask = (te >= t_start) & (te <= t_stop)
-    t_ov = te[mask]
-    eta_ov = eta_bp[mask]
-    lid_ov = np.interp(t_ov, tl_full, lid_bp)   # lidar resampled onto eta grid
-
-    # correlation + amplitude over the overlap only
-    if eta_ov.size > 4:
-        r_ov = float(np.corrcoef(eta_ov, lid_ov)[0, 1])
-    else:
-        r_ov = float("nan")
+    t_ov = stack_t0 + np.arange(n_eta) / fs       # absolute acquisition time
+    eta_ov = eta_bp
+    lid_ov = seg[pk:pk + n_eta]
+    r_ov = float(np.corrcoef(eta_ov, lid_ov)[0, 1])
     std_e, std_l = eta_ov.std(), lid_ov.std()
-    print(f"  overlap window  = {t_start:.1f}-{t_stop:.1f} s "
-          f"({t_ov[-1]-t_ov[0]:.1f} s, where both series exist)")
-    print(f"  overlap corr    = {r_ov:.3f}")
+    c_swell = 9.806 / (2 * np.pi * 0.17)          # deep-water celerity near peak
+    print(f"  ~20 m / {c_swell:.1f} m/s celerity predicts ~{20.0 / c_swell:.1f} s")
     print(f"  band-passed std : eta_long {std_e*100:.2f} cm vs "
           f"lidar {std_l*100:.2f} cm (ratio {std_e/std_l:.2f})")
 
@@ -164,21 +162,21 @@ def main():
 
     ax1.plot(t_ov, eta_ov, lw=1.5, color="#3b2f8f", label="PSS $\\eta_{long}$")
     ax1.plot(t_ov, lid_ov, lw=1.2, alpha=0.85, color="#d2691e",
-             label=f"Riegl lidar (aligned, shifted {-lag_peak:+.2f} s)")
+             label=f"Riegl lidar (propagation lag {lag_peak:+.2f} s)")
     ax1.set_xlim(t_ov[0], t_ov[-1])
-    ax1.set_xlabel("time [s]  (PSS clock)")
+    ax1.set_xlabel("acquisition time [s]  (t=0 at shared start)")
     ax1.set_ylabel("elevation [m]")
-    ax1.set_title(f"PSS $\\eta_{{long}}$ vs Riegl lidar, overlap window "
-                  f"(band {f_lo}-{f_hi:.2f} Hz, r = {r_ov:.2f})")
+    ax1.set_title(f"PSS $\\eta_{{long}}$ vs Riegl lidar at the frame-{args.start_frame} "
+                  f"anchor (band {f_lo}-{f_hi:.2f} Hz, r = {r_ov:.2f})")
     ax1.legend(loc="upper right")
     ax1.grid(alpha=0.3)
 
     ax2.plot(lags_k, xc_k, lw=1.3, color="#3b2f8f")
     ax2.axvline(lag_peak, color="k", ls="--", lw=1,
-                label=f"peak lag {lag_peak:+.2f} s, r={r_peak:.2f}")
-    ax2.set_xlabel("lag [s]  (PSS relative to lidar)")
+                label=f"residual lag {lag_peak:+.2f} s, r={r_peak:.2f}")
+    ax2.set_xlabel("residual lag [s]  (about the frame-7001 anchor)")
     ax2.set_ylabel("normalized cross-correlation")
-    ax2.set_title("Cross-correlation (lag finder)")
+    ax2.set_title("Cross-correlation about the frame-7001 anchor")
     ax2.legend(loc="upper right")
     ax2.grid(alpha=0.3)
 

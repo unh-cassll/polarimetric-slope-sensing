@@ -330,7 +330,7 @@ def run_epss(
             method=method,
             gain_mode=gain_mode,
             lab_gain=lab_gain,
-            theta_i_mean_deg=theta_i_mean_deg,   # may be None when eta off; ok
+            theta_i_mean_deg=theta_i_mean_deg,   # may be None when eta stage is off
             n_water=n_water,
             gain_reference_frame=gain_reference_frame,
         )
@@ -346,7 +346,7 @@ def run_epss(
         slope_x[ti], slope_y[ti] = r.Sx, r.Sy
         slope_results.append(r)
 
-    # If the eta stage is off, we are done.
+    # Eta stage off: return slope fields only.
     if not eta_ran:
         return EpssResult(
             slope_x=slope_x, slope_y=slope_y, slope_results=slope_results,

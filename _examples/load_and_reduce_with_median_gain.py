@@ -65,7 +65,7 @@ DISPLAY_STRIDE = 4
 
 
 def _print_metadata_summary(meta, label: str) -> None:
-    """One-screen summary of what we got from a NetCDF file."""
+    """One-screen summary of a NetCDF file's metadata."""
     attrs = meta.raw_attrs
     print("=" * 70)
     print(f"NetCDF metadata summary  [{label}]")

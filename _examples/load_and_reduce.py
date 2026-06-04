@@ -2,7 +2,7 @@
 End-to-end example: load a raw DoFP frame from NetCDF, reduce it with the
 pss / E-PSS pipeline, and plot the result.
 
-This is the canonical "hello world" for the pss package, exercising:
+Canonical minimal example for the pss package, exercising:
     1. read_netcdf_frame()        -- load raw frame + metadata
     2. apply_layout_from_meta()   -- honor the file's super-pixel layout
     3. compute_slope_field()      -- full reduction with empirical DoLP gain
@@ -57,7 +57,7 @@ DISPLAY_STRIDE = 4
 
 
 def _print_metadata_summary(meta) -> None:
-    """One-screen summary of what we got from the NetCDF."""
+    """One-screen summary of the NetCDF metadata."""
     attrs = meta.raw_attrs
     print("=" * 70)
     print("NetCDF metadata summary")

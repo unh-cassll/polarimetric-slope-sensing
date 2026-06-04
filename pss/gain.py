@@ -102,8 +102,8 @@ def apply_gain(
         Refractive index of seawater (default 1.34).
     clip_gain : (lo, hi)
         Safety clamp for the empirical gain. Field values reported in the
-        E-PSS paper are in the range 1.2-1.7; we allow a wider window but
-        refuse to apply a gain that suggests the calibration is bogus.
+        E-PSS paper are in the range 1.2-1.7; the window is wider but refuses
+        a gain that implies an invalid calibration.
     s1_ref, s2_ref : ndarray, optional
         Reference Stokes parameters from which to derive the *observed* DoLP
         median for the empirical gain. These should come from the per-pixel

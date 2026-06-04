@@ -15,7 +15,7 @@ wavelength shorter than the frame) in a single pipeline.
   Self-contained core utilities, no other project dependencies.
 - `recon.py` — `reconstruct_eta_field(...)`.  The core reconstruction
   (per-frame Harker-O'Leary short-wave path + CWT long-wave path).  Takes
-  in-memory slope stacks.  (Formerly named `eta_field_recon.py`.)
+  in-memory slope stacks.
 - `eta_pipeline.py` — `reconstruct_eta_from_record(...)`.  Field-data driver:
   reads a NetCDF record, reduces each frame with `pss`, optionally
   orthorectifies, and reconstructs η.  Carries the record-length gate that
@@ -23,7 +23,7 @@ wavelength shorter than the frame) in a single pipeline.
 - `orthorectify.py` — `orthorectify_static(...)`.  Projects an obliquely-
   viewed slope field onto a uniform ground grid (static-platform geometry)
   and returns the true ground `dx`.
-- `demo_eta_field.py` — self-contained runnable demo that synthesises a
+- `demo_eta_field.py` — self-contained runnable demo that synthesizes a
   realistic wave field, runs the reconstruction, and produces a
   diagnostic plot.
 
@@ -107,9 +107,9 @@ On a 256×256 input at downsample=4 (64×64 output), 1024 frames:
 
 ## Known gotchas
 
-- **`pyGrad2Surf.g2s` modifies its inputs in place** (lines 71–74 of its
-  `_g2sSylvester`).  `recon.py` passes `.copy()` of slopes;
-  do the same if you call `g2s` elsewhere.  Worth filing upstream.
+- **`pyGrad2Surf.g2s` modifies its inputs in place** (in its
+  `_g2sSylvester`).  `recon.py` passes `.copy()` of the slopes;
+  do the same if you call `g2s` elsewhere.
 
 - The wavelet inverse uses an empirical calibration factor of 1.4383
   (≈ √2) to compensate for an under-normalization in the EWDM CWT

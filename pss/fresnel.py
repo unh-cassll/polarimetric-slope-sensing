@@ -56,9 +56,8 @@ def build_lookup_table(
     i_peak = int(np.argmax(dolp_dense))
     theta_rise = theta_dense[: i_peak + 1]
     dolp_rise  = dolp_dense[: i_peak + 1]
-    # PCHIP interpolant expects strictly increasing x. The rising branch of
-    # the Fresnel DoLP curve is monotonic, so dolp_rise is fine — but the
-    # peak may have repeated values within floating-point precision; trim.
+    # PCHIP requires strictly increasing x. The rising branch is monotonic, but
+    # the peak may have repeated values within floating-point precision; trim.
     keep = np.concatenate([[True], np.diff(dolp_rise) > 0])
     dolp_rise = dolp_rise[keep]
     theta_rise = theta_rise[keep]

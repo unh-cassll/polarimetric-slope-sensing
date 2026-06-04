@@ -157,9 +157,8 @@ def main() -> None:
             arr = np.asarray(rf[tuple(sl)], dtype=np.float64)
             return _orient_raw_frame(arr, remaining_dims, time_index=0)
 
-        # Per-phase timers to localize any stall ("nothing bound but slow"
-        # usually means a blocking wait in one phase -- typically the read on
-        # a high-latency / synced filesystem).
+        # Per-phase timers to localize stalls (typically a blocking read on a
+        # high-latency or synced filesystem).
         t_read = t_reduce = t_ortho = 0.0
         _plan = None
 

@@ -126,7 +126,7 @@ def _bare_inverse(W, freqs, fs, mother):
 def _per_scale_gain(freqs, fs, T, mother):
     """Per-frequency correction so a unit tone reconstructs at unit amplitude.
 
-    For each f in `freqs`, synthesise a unit cosine of length T, take the
+    For each f in `freqs`, synthesize a unit cosine of length T, take the
     forward CWT on the same grid, run the un-calibrated inverse, and measure
     the central-window amplitude gain G_bare(f).  The applied correction is
     g(f) = 1 / G_bare(f).  Phase- and amplitude-independent, so one cosine
@@ -168,7 +168,7 @@ def _inverse_cwt(W, freqs, fs, mother=None, per_scale=False):
 
     Two normalization modes:
 
-    - per_scale=False (default): the original behaviour.  The bare TC
+    - per_scale=False (default): the original behavior.  The bare TC
       reconstruction under-shoots variance by ~0.696 with EWDM's CWT
       normalization, so a single universal constant 1.4383 (~sqrt(2)) is
       applied, giving 1-3% round-trip fidelity across grids.
@@ -236,9 +236,12 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
     (destroy it).
 
     The elevation coefficient is the slope projection divided by the
-    wavenumber (slope = d(eta)/dx -> in the wavelet domain a factor of i*k):
+    wavenumber. Under ewdm's CWT convention slope = d(eta)/dx maps to a
+    factor of -i*k in the wavelet domain, so the inverse carries +1j
+    (verified empirically: a unit cos(wt) slope input reconstructs +cos(wt),
+    not -cos -- see skirt_correction's self-calibration):
 
-        W_eta = -1j * (cos_th * Wsx + sin_th * Wsy) / k
+        W_eta = +1j * (cos_th * Wsx + sin_th * Wsy) / k
 
     Non-finite entries (e.g. from k = NaN at omega = 0) are set to 0.
 
@@ -267,7 +270,9 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
     # non-finite entries there, which we immediately zero out. Silence the
     # warning since this is by-design, not an error.
     with np.errstate(divide="ignore", invalid="ignore"):
-        W_eta = -1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
+        # +1j (not -1j): ewdm CWT convention; a unit cos slope reconstructs
+        # +cos elevation. -1j inverts the surface (verified vs lidar + synthetic).
+        W_eta = +1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
     W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
     if skirt_gain is not None:
         W_eta = W_eta * np.asarray(skirt_gain, dtype=float)[:, None]
@@ -287,7 +292,7 @@ def skirt_correction(freqs, fs, k_disp, T, mother=None,
     krogstad_eta_coeffs divides the slope CWT coefficients by k(omega) per
     frequency.  Because each Morlet wavelet has finite bandwidth, a
     monochromatic surface component at f0 has CWT energy spread across
-    neighbouring scales; dividing that skirt by k(omega) (~f^2 in deep water)
+    neighboring scales; dividing that skirt by k(omega) (~f^2 in deep water)
     reshapes it asymmetrically and biases the reconstructed elevation
     amplitude.  This bias grows with frequency and is depth-dependent (via the
     dispersion relation), so it is upstream of, and invisible to, _inverse_cwt.
@@ -299,7 +304,7 @@ def skirt_correction(freqs, fs, k_disp, T, mother=None,
     caller's own (freqs, fs, k_disp, mother) grid -- self-contained,
     parameter-free, depth-aware through k_disp.  The reshaping acts on the
     coefficient magnitude profile identically for any wave direction, so the
-    theta=0 calibration used here generalises across direction.
+    theta=0 calibration used here generalizes across direction.
 
     Multiply the krogstad elevation coefficients by c(f)[:, None] before the
     inverse CWT (e.g. via krogstad_eta_coeffs(..., skirt_gain=c)), pairing
@@ -343,7 +348,7 @@ def skirt_correction(freqs, fs, k_disp, T, mother=None,
         da = xr.DataArray(sx_w, coords={"time": t}, dims=["time"])
         Wsx = cwt(da, freqs=freqs, fs=fs, mother=mother).values
         with np.errstate(divide="ignore", invalid="ignore"):
-            W_eta = -1j * Wsx / k_col                      # krogstad op at theta=0
+            W_eta = +1j * Wsx / k_col                      # krogstad op at theta=0
         W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
         rec = np.real(_inverse_cwt(W_eta, freqs, fs, mother, per_scale=per_scale))
         denom = np.std(((eta_ref - eta_ref.mean()) * win)[c])

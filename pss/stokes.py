@@ -104,11 +104,9 @@ def _bilinear_upsample(sub: np.ndarray, out_shape: tuple[int, int]) -> np.ndarra
     rows = np.arange(H, dtype=np.float64)
     cols = np.arange(W, dtype=np.float64)
     rr, cc = np.meshgrid(rows, cols, indexing="ij")
-    # For a generic orientation we don't know which offset we're working with
-    # at call time — but the caller passes in the appropriate sub-image and we
-    # treat its samples as living on a regular grid in sub-pixel coordinates.
-    # The half-pixel offset is absorbed by sampling at (rr-0.5)/2 etc., which
-    # MATLAB's interp2 with 'linear' on the sparse grid effectively does.
+    # The sub-image samples lie on a regular grid in sub-pixel coordinates.
+    # The half-pixel offset is absorbed by sampling at (rr-0.5)/2 etc., matching
+    # MATLAB's interp2 'linear' on the sparse grid.
     sub_rr = (rr - 0.5) / 2.0
     sub_cc = (cc - 0.5) / 2.0
     return map_coordinates(sub, [sub_rr, sub_cc], order=1, mode="nearest")
@@ -213,11 +211,8 @@ def by_conv_demodulation(
     pixel, so we build a per-parity {orientation -> kernel} map directly from
     the layout (via a labeled probe frame) and fill each parity sublattice from
     its own map. This yields a full-resolution (H, W) result identical to the
-    paper's scheme. Verified: flat field -> DoLP 0; known synthetic
-    polarization field reconstructs DoLP and orientation exactly.
-
-    The earlier releases used a separable Bartlett kernel here as a stand-in;
-    this is now the exact Method 4 filter.
+    paper's scheme: a flat field gives DoLP 0, and a synthetic polarization
+    field reconstructs DoLP and orientation exactly.
     """
     f = np.asarray(frame, dtype=np.float64)
     H, W = f.shape
