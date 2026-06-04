@@ -560,21 +560,11 @@ python _examples/load_and_reduce.py my_frame.nc --method bilinear --gain lab
 
 ## Citation
 
-If you use `pss` or `eta_field_recon` in published work, please cite the relevant paper(s) in the E-PSS series:
+If you use `pss` or `eta_field_recon` in published work, please cite the relevant paper in the E-PSS series:
 
 > Laxague, N. J. M., Z. G. Duvarcı, L. Hogan, J. Liu, C. Bouillon, and
-> C. J. Zappa (2026). *E-PSS: the Extended Polarimetric Slope Sensing
-> technique for measuring ocean surface waves.* IEEE Transactions on
-> Geoscience and Remote Sensing.
-> *(use this for the polarimetric / slope-field part of the pipeline)*
-
-> Laxague, N. J. M., et al. (2026). *Reconstruction of the surface
-> elevation field η(x, y, t) from slope-imager data using a long-short
-> wavelet decomposition.* IEEE Journal of Oceanic Engineering. (in
-> preparation / forthcoming)
-> *(use this for the elevation-reconstruction part of the pipeline)*
-
-…and reference the MATLAB original at [`unh-cassll/polarimetric-slope-sensing`](https://github.com/unh-cassll/polarimetric-slope-sensing).
+> C. J. Zappa (2026). "E-PSS: the Extended Polarimetric Slope Sensing
+> technique for measuring ocean surface waves." *IEEE Journal of Oceanic Engineering.* (in preparation / forthcoming)
 
 ## License
 
