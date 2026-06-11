@@ -8,7 +8,7 @@ expose three DoLP-gain modes per Laxague et al. (2026, IEEE TGRS):
     "none"       - no gain (raw polarimeter measurement)
     "lab"        - fixed lab-calibrated gain (replaces the original
                    hard-coded 1.2185 / 1.2197 from the MATLAB)
-    "empirical"  - frame-by-frame gain that scales the median DoLP to match
+    "empirical"  - gain that scales a temporal-median reference DoLP to match
                    the Fresnel ideal at the camera's known angle of incidence
 
 Quick start:

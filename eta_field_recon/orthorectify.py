@@ -28,9 +28,10 @@ one true dx, which is exactly the value reconstruct_eta_field needs (and which
 the pipeline previously required the caller to supply by hand).
 
 What this does NOT do: rotate the (Sx, Sy) slope vectors for camera tilt.
-On a static platform that tilt is a CONSTANT offset, and pss.compute_slope_field
-already subtracts the per-frame spatial mean of Sx and Sy (slope.py), which
-removes any constant tilt as a side effect. Adding a tilt rotation here would
+On a static platform that tilt is a CONSTANT offset, removed once at the
+record level inside eta_field_recon (recon subtracts the time-mean of the
+spatial-mean slope before the long-wave inversion; the short-wave g2s path
+discards the spatial mean by construction). Adding a tilt rotation here would
 double-correct. So orthorectification is purely the geometric pixel resample.
 
 Single-tilt-plane assumption
@@ -98,8 +99,9 @@ def _ground_coordinates(Ny, Nx, H, theta_i_deg, f_m, pitch_m):
     (Ny, Nx) giving where each pixel's ray meets the z=0 mean surface.
     """
     th = np.deg2rad(theta_i_deg)
-    ix = (np.arange(Nx) - Nx / 2.0)
-    iy = (np.arange(Ny) - Ny / 2.0)
+    # (N-1)/2 centers the optical axis on the pixel grid (symmetric for any N).
+    ix = (np.arange(Nx) - (Nx - 1) / 2.0)
+    iy = (np.arange(Ny) - (Ny - 1) / 2.0)
     # angle of each pixel's ray from the optical axis
     ax = np.arctan(ix * pitch_m / f_m)   # cross-look
     ay = np.arctan(iy * pitch_m / f_m)   # along-tilt
@@ -190,8 +192,11 @@ def orthorectify_static(
             f"plan was built for input shape ({plan.Ny}, {plan.Nx}) but the "
             f"slope field is ({Ny}, {Nx}).")
 
-    sx_out = np.empty((T, plan.Nyg, plan.Nxg), dtype=float)
-    sy_out = np.empty((T, plan.Nyg, plan.Nxg), dtype=float)
+    # Preserve a floating input dtype (the pipeline stacks float32 to halve
+    # memory; promoting to float64 here would double it back on a larger grid).
+    out_dtype = sx.dtype if np.issubdtype(sx.dtype, np.floating) else np.float64
+    sx_out = np.empty((T, plan.Nyg, plan.Nxg), dtype=out_dtype)
+    sy_out = np.empty((T, plan.Nyg, plan.Nxg), dtype=out_dtype)
     for ti in range(T):
         sx_out[ti] = _apply_plan(plan, sx[ti], fill_value)
         sy_out[ti] = _apply_plan(plan, sy[ti], fill_value)

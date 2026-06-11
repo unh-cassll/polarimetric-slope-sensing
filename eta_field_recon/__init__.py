@@ -34,7 +34,8 @@ See README.md for the method, HANDOFF.md for the derivation, gotchas, and
 ideas for extensions.
 """
 
-from .recon import reconstruct_eta_field
+from .recon import (reconstruct_eta_field, long_wave_gate,
+                    invert_mean_slope_series)
 from .wavelet_core import (lindisp_with_current, aperture_transfer_function,
                            aperture_transfer_gain, directional_spread,
                            spread_hs_factor, aperture_crossover_frequency,
@@ -44,6 +45,8 @@ from .eta_pipeline import PipelineResult, reconstruct_eta_from_record
 
 __all__ = [
     "reconstruct_eta_field",
+    "long_wave_gate",
+    "invert_mean_slope_series",
     "reconstruct_eta_from_record",
     "PipelineResult",
     "orthorectify_static",

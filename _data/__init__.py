@@ -21,13 +21,15 @@ hand is used as-is if the checksum matches.)
 
 What IS committed is a small derived artifact, asit2019_mean_slope_60s.nc,
 holding the spatial-mean slope time series sx_mean(t), sy_mean(t) for the full
-60 s record (1-D, a few KB). It is produced once by tools/precompute_mean_wave.py
+60 s record (1-D, a few KB). It is produced once by _tools/precompute_mean_wave.py
 and lets mean_wave_timeseries() reconstruct the long-wave elevation eta_long(t)
 live, offline, without the 10 GB download. See mean_wave_timeseries() below.
 """
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 import urllib.request
 from pathlib import Path
 
@@ -58,7 +60,7 @@ _MD5 = {
     STACK_FULL_FILENAME: "9974f2b354f7517652d003cb5aef13fa",
 }
 
-# Committed derived artifact (produced by tools/precompute_mean_wave.py).
+# Committed derived artifact (produced by _tools/precompute_mean_wave.py).
 MEAN_SLOPE_FILENAME = "asit2019_mean_slope_60s.nc"
 
 # Committed independent-validation artifact: Riegl LD90-3 water-surface
@@ -74,12 +76,16 @@ def _md5_of(path: Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def _download_from_zenodo(name: str, dest: Path) -> None:
+def _download_from_zenodo(name: str, dest: Path,
+                          timeout_s: float = 60.0) -> None:
     """Fetch `name` from the Zenodo record into `dest`, verifying md5.
 
-    Streams to a temporary file, checks the md5 against the published
-    checksum, and only then moves it into place, so an interrupted download
-    never leaves a corrupt file at `dest`.
+    Streams to a process-unique temporary file (so concurrent downloads
+    cannot corrupt each other), checks the md5 against the published
+    checksum, and only then moves it into place atomically. The temporary
+    file is removed on any failure, including a connection that dies
+    mid-transfer; `timeout_s` bounds each socket read so a stalled
+    connection raises instead of hanging.
     """
     if name not in _MD5:
         raise KeyError(
@@ -87,36 +93,52 @@ def _download_from_zenodo(name: str, dest: Path) -> None:
             f"{sorted(_MD5)}."
         )
     url = ZENODO_FILE_URL.format(name=name)
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp = dest.with_suffix(dest.suffix + f".part-{os.getpid()}")
     print(f"downloading {name} from Zenodo (record {ZENODO_RECORD_ID}) ...")
-    urllib.request.urlretrieve(url, tmp)
-
-    got = _md5_of(tmp)
-    if got != _MD5[name]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp, \
+                open(tmp, "wb") as out:
+            shutil.copyfileobj(resp, out, length=1 << 20)
+        got = _md5_of(tmp)
+        if got != _MD5[name]:
+            raise ValueError(
+                f"md5 mismatch for {name}: expected {_MD5[name]}, got {got}. "
+                f"The download may be corrupt; try again."
+            )
+        os.replace(tmp, dest)
+    except BaseException:
         tmp.unlink(missing_ok=True)
-        raise ValueError(
-            f"md5 mismatch for {name}: expected {_MD5[name]}, got {got}. "
-            f"The download may be corrupt; try again."
-        )
-    tmp.replace(dest)
+        raise
     print(f"  saved + verified -> {dest}")
+
+
+# Files already verified this process, keyed on (path, size, mtime_ns) so a
+# replaced file re-verifies. Re-hashing the 10.1 GB stack on every resolve()
+# costs tens of seconds.
+_VERIFIED: dict[tuple, bool] = {}
 
 
 def resolve(name: str, *, allow_download: bool = True) -> Path:
     """Return a local path to archive file `name`, downloading if needed.
 
     If the file is already in EXAMPLES_DIR it is used as-is (and, if a
-    checksum is known, verified). Otherwise it is fetched from Zenodo when
-    `allow_download` is True; if False, a missing file raises instead.
+    checksum is known, verified once per process per file state). Otherwise
+    it is fetched from Zenodo when `allow_download` is True; if False, a
+    missing file raises instead.
     """
     path = EXAMPLES_DIR / name
     if path.exists():
-        if name in _MD5 and _md5_of(path) != _MD5[name]:
-            raise ValueError(
-                f"{name} exists in {EXAMPLES_DIR} but its md5 does not match "
-                f"the archive. Delete it to re-download, or restore the "
-                f"correct file."
-            )
+        if name in _MD5:
+            st = path.stat()
+            key = (str(path), st.st_size, st.st_mtime_ns)
+            if key not in _VERIFIED:
+                if _md5_of(path) != _MD5[name]:
+                    raise ValueError(
+                        f"{name} exists in {EXAMPLES_DIR} but its md5 does "
+                        f"not match the archive. Delete it to re-download, "
+                        f"or restore the correct file."
+                    )
+                _VERIFIED[key] = True
         return path
     if allow_download:
         _download_from_zenodo(name, path)
@@ -150,14 +172,14 @@ def mean_slope_path() -> Path:
     """Local path to the committed spatial-mean slope artifact.
 
     This is a small derived file, committed to the repository (not on Zenodo).
-    If it is missing, it must be regenerated with tools/precompute_mean_wave.py.
+    If it is missing, it must be regenerated with _tools/precompute_mean_wave.py.
     """
     path = EXAMPLES_DIR / MEAN_SLOPE_FILENAME
     if not path.exists():
         raise FileNotFoundError(
             f"{MEAN_SLOPE_FILENAME} not found in {EXAMPLES_DIR}. It is the "
             f"committed spatial-mean slope series; regenerate it once with:\n"
-            f"    python tools/precompute_mean_wave.py --input <60s_stack.nc>\n"
+            f"    python _tools/precompute_mean_wave.py --input <60s_stack.nc>\n"
             f"(see that script's header for details)."
         )
     return path
@@ -221,11 +243,7 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
     import numpy as np
     from netCDF4 import Dataset
 
-    from eta_field_recon.wavelet_core import (
-        lindisp_with_current, _cwt, _inverse_cwt, krogstad_eta_coeffs,
-        skirt_correction,
-    )
-    from eta_field_recon.recon import _make_temporal_window
+    from eta_field_recon import invert_mean_slope_series
 
     path = mean_slope_path()
     with Dataset(str(path)) as ds:
@@ -241,19 +259,7 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
         print(f"mean_wave_timeseries: {T} samples @ {fs:g} Hz "
               f"({T/fs:.1f} s), depth {depth} m")
 
-    freqs = np.linspace(0.05, 2.0, 80)   # same default band as reconstruct_eta_field
-    sx = sx_mean - sx_mean.mean()
-    sy = sy_mean - sy_mean.mean()
-    win = _make_temporal_window(T, "tukey", 0.25)
-    Wsx = _cwt(sx * win, freqs, fs, None).values
-    Wsy = _cwt(sy * win, freqs, fs, None).values
-    _, k = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
-
-    skirt_gain = None
-    if skirt_correct:
-        skirt_gain = skirt_correction(freqs, fs, k, T, None,
-                                      per_scale=inverse_per_scale)
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k, skirt_gain=skirt_gain)
-    eta_long = _inverse_cwt(W_eta, freqs, fs, None, per_scale=inverse_per_scale)
-
+    eta_long = invert_mean_slope_series(
+        sx_mean, sy_mean, fs, water_depth_m=depth,
+        inverse_per_scale=inverse_per_scale, skirt_correct=skirt_correct)
     return t, eta_long

@@ -10,15 +10,15 @@ The behavior scales with what you give it:
   * Pass only an array of raw frames -> every frame is reduced with `pss`
     and you get the stack of slope fields back. Nothing else runs.
 
-  * Additionally pass ALL FOUR acquisition parameters
-    (fs, theta_i, freeboard, pixel_pitch) -> the slope stack is also
-    orthorectified onto a uniform ground grid (static-platform geometry)
+  * Additionally pass ALL FIVE acquisition parameters
+    (fs, theta_i, freeboard, pixel_pitch, focal_length) -> the slope stack is
+    also orthorectified onto a uniform ground grid (static-platform geometry)
     and the surface elevation eta(x, y, t) is reconstructed, including the
     long-wave (mean-wave) inference. The long-wave path remains gated on
     record length exactly as in eta_pipeline (a short record returns
     eta_long = 0).
 
-The four eta-enabling parameters are all-or-nothing: supplying some but not
+The three geometry parameters are all-or-nothing: supplying some but not
 all of them raises a clear error rather than silently doing half the job,
 because orthorectification and the dispersion-relation inversion each need
 the full set to be physically meaningful.
@@ -41,10 +41,10 @@ from typing import Any
 
 import numpy as np
 
-from pss import compute_slope_field
+from pss import build_lookup_table, compute_slope_field
 
 from eta_field_recon.orthorectify import orthorectify_static
-from eta_field_recon.recon import reconstruct_eta_field
+from eta_field_recon.recon import reconstruct_eta_field, long_wave_gate
 from eta_field_recon.eta_pipeline import DEFAULT_MIN_PERIODS
 
 
@@ -70,7 +70,9 @@ class EpssResult:
     # always present
     slope_x: np.ndarray          # (T, Ny, Nx) cross-look slope stack (rad)
     slope_y: np.ndarray          # (T, Ny, Nx) along-look slope stack (rad)
-    slope_results: list          # per-frame pss SlopeResult objects
+    slope_results: list          # per-frame pss SlopeResult objects; empty
+                                 # unless keep_slope_results=True (each holds
+                                 # ~10 full-resolution arrays per frame)
 
     # eta stage (None unless the acquisition params were supplied)
     eta_xyt: np.ndarray | None = None
@@ -136,6 +138,7 @@ def run_epss(
     lab_gain: tuple[float, float] = (1.2185, 1.2197),
     gain_reference_frame=None,
     min_gain_seconds: float = DEFAULT_MIN_GAIN_SECONDS,
+    keep_slope_results: bool = False,
     verbose: bool = True,
 ) -> EpssResult:
     """Reduce raw DoFP frames to slopes, and (optionally) reconstruct eta.
@@ -192,12 +195,17 @@ def run_epss(
             reference frame still enables the gain. The resolved mode and
             whether the auto-median was used are reported on EpssResult.
 
+        keep_slope_results : retain the full per-frame SlopeResult objects on
+            EpssResult.slope_results. Each holds ~10 full-resolution arrays,
+            so a long record at sensor resolution multiplies memory use ~10x;
+            off by default.
         verbose : print progress and the assumptions made.
 
     Returns:
         EpssResult. `slope_x` / `slope_y` are always present; the eta fields
         are present only when the acquisition parameters enabled that stage.
     """
+    resolution = str(resolution).lower()
     frames = np.asarray(frames)
     if frames.ndim == 2:
         frames = frames[None]
@@ -323,7 +331,20 @@ def run_epss(
     if verbose:
         print(f"  reducing {T} frame(s) with pss ...")
 
-    def _reduce(frame):
+    # Per-record invariants, hoisted out of the frame loop: the Fresnel
+    # lookup (a 200k-point PCHIP fit) and the empirical-gain reference DoLP
+    # (a full Stokes reduction of the reference frame).
+    lut = build_lookup_table(n_water=n_water)
+    dolp_ref = None
+    if gain_reference_frame is not None and gain_mode == "empirical":
+        ref_res = compute_slope_field(
+            np.asarray(gain_reference_frame), resolution=resolution,
+            method=method, gain_mode="none", n_water=n_water,
+            lookup_table=lut)
+        dolp_ref = float(np.nanmedian(
+            np.sqrt(ref_res.s1 ** 2 + ref_res.s2 ** 2)))
+
+    def _reduce(frame, use_ref_frame=False):
         return compute_slope_field(
             frame,
             resolution=resolution,
@@ -332,19 +353,24 @@ def run_epss(
             lab_gain=lab_gain,
             theta_i_mean_deg=theta_i_mean_deg,   # may be None when eta stage is off
             n_water=n_water,
-            gain_reference_frame=gain_reference_frame,
+            lookup_table=lut,
+            # Frame 0 reduces against the reference frame itself (canonical
+            # notes/bookkeeping); the rest reuse the precomputed scalar.
+            gain_reference_frame=gain_reference_frame if use_ref_frame else None,
+            dolp_obs_median=None if use_ref_frame else dolp_ref,
         )
 
-    res0 = _reduce(frames[0])
+    res0 = _reduce(frames[0], use_ref_frame=True)
     Ny, Nx = res0.Sx.shape
     slope_x = np.empty((T, Ny, Nx), dtype=float)
     slope_y = np.empty((T, Ny, Nx), dtype=float)
     slope_x[0], slope_y[0] = res0.Sx, res0.Sy
-    slope_results = [res0]
+    slope_results = [res0] if keep_slope_results else []
     for ti in range(1, T):
         r = _reduce(frames[ti])
         slope_x[ti], slope_y[ti] = r.Sx, r.Sy
-        slope_results.append(r)
+        if keep_slope_results:
+            slope_results.append(r)
 
     # Eta stage off: return slope fields only.
     if not eta_ran:
@@ -378,13 +404,10 @@ def run_epss(
     # ------------------------------------------------------------------
     # Length gate + eta reconstruction.
     # ------------------------------------------------------------------
-    f_min = float(freqs_cwt.min()) if freqs_cwt is not None else 0.05
-    gate_threshold_s = min_periods / f_min
     record_duration_s = T / fs
-    if force_long_wave is None:
-        long_wave = record_duration_s >= gate_threshold_s
-    else:
-        long_wave = bool(force_long_wave)
+    gate_ok, gate_threshold_s, f_min = long_wave_gate(
+        record_duration_s, freqs_cwt, min_periods)
+    long_wave = gate_ok if force_long_wave is None else bool(force_long_wave)
 
     if verbose:
         gate_state = "enabled" if long_wave else "skipped (record too short)"
@@ -511,13 +534,10 @@ def run_epss_from_slopes(
     # period to attempt the long-wave inversion? Identical physics to run_epss
     # and reconstruct_eta_from_record.
     # ------------------------------------------------------------------
-    f_min = float(freqs_cwt.min()) if freqs_cwt is not None else 0.05
-    gate_threshold_s = min_periods / f_min
     record_duration_s = T / fs
-    if force_long_wave is None:
-        long_wave = record_duration_s >= gate_threshold_s
-    else:
-        long_wave = bool(force_long_wave)
+    gate_ok, gate_threshold_s, f_min = long_wave_gate(
+        record_duration_s, freqs_cwt, min_periods)
+    long_wave = gate_ok if force_long_wave is None else bool(force_long_wave)
 
     if verbose:
         print("run_epss_from_slopes:")

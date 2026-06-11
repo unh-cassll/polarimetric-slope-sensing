@@ -851,7 +851,7 @@ def test_run_epss_frames_only_returns_slopes():
     assert r.slope_x.ndim == 3 and r.slope_x.shape[0] == 1
     assert r.slope_x.shape == r.slope_y.shape
     assert r.eta_xyt is None
-    assert len(r.slope_results) == 1
+    assert r.slope_results == []          # retention is opt-in (memory)
 
 
 def test_run_epss_all_params_runs_eta():
@@ -1012,3 +1012,173 @@ def test_short_wave_false_skips_field_returns_none():
     # confidence and diag still produced
     assert conf is not None
     assert diag["dx_ds"] == dx * 2
+
+
+# ---------------------------------------------------------------------------
+# Weak-point regressions: per-band direction sign, crossover edge bias,
+# transfer-function NaN handling, empty aperture, skirt NaN policy,
+# single-band inverse, recolor band ceiling.
+# ---------------------------------------------------------------------------
+
+def _krogstad_series(sx, sy, fs, T, freqs=None, depth=100.0):
+    """slope series -> eta_long via the full calibrated chain."""
+    import warnings as _w
+    from eta_field_recon.wavelet_core import (
+        _cwt, _inverse_cwt, krogstad_eta_coeffs, skirt_correction)
+    from eta_field_recon.recon import _make_temporal_window
+
+    if freqs is None:
+        freqs = np.linspace(0.05, 2.0, 80)
+    win = _make_temporal_window(T, "tukey", 0.25)
+    Wsx = _cwt(sx * win, freqs, fs, None).values
+    Wsy = _cwt(sy * win, freqs, fs, None).values
+    _, k = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", UserWarning)
+        sg = skirt_correction(freqs, fs, k, T, None, per_scale=True)
+        W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k, skirt_gain=sg)
+        return np.real(_inverse_cwt(W_eta, freqs, fs, None, per_scale=True))
+
+
+def test_opposing_systems_keep_their_own_signs():
+    """Two near-axis systems traveling in OPPOSITE along-look directions at
+    different frequencies must both reconstruct upright. A global band sign
+    inverted the weaker system (per-band r = -1) while preserving Hs."""
+    fs, T, g = 10.0, 2048, 9.806
+    t = np.arange(T) / fs
+    systems = [(0.10, 0.4, np.deg2rad(80.0)), (0.30, 0.2, np.deg2rad(280.0))]
+    sx = np.zeros(T)
+    sy = np.zeros(T)
+    for f0, A, th in systems:
+        k0 = (2 * np.pi * f0) ** 2 / g
+        sx += A * k0 * np.cos(th) * np.sin(2 * np.pi * f0 * t)
+        sy += A * k0 * np.sin(th) * np.sin(2 * np.pi * f0 * t)
+    rec = _krogstad_series(sx, sy, fs, T)
+    m = slice(T // 4, 3 * T // 4)
+    F = np.fft.rfft(rec[m])
+    fr = np.fft.rfftfreq(rec[m].size, 1 / fs)
+
+    def band(lo, hi):
+        G = F.copy()
+        G[(fr < lo) | (fr > hi)] = 0
+        return np.fft.irfft(G, n=rec[m].size)
+
+    r1 = np.corrcoef(band(0.05, 0.2), 0.4 * np.cos(2 * np.pi * 0.10 * t[m]))[0, 1]
+    r2 = np.corrcoef(band(0.2, 0.45), 0.2 * np.cos(2 * np.pi * 0.30 * t[m]))[0, 1]
+    assert r1 > 0.95, f"low-frequency system inverted/degraded: r={r1:.3f}"
+    assert r2 > 0.95, f"high-frequency system inverted/degraded: r={r2:.3f}"
+
+
+def test_crossover_ignores_band_edges():
+    """Edge samples must not win the crossover search: zero-padded smoothing
+    used to bias the first/last ratio samples low, so a flat-plateau ratio
+    with a genuine interior minimum returned the grid edge."""
+    from eta_field_recon.wavelet_core import aperture_crossover_frequency
+
+    freqs = np.linspace(0.05, 2.0, 80)
+    ratio = np.full(80, 1.7)
+    i0 = int(np.argmin(np.abs(freqs - 0.5)))
+    ratio[i0] = 1.2
+    fx = aperture_crossover_frequency(ratio, np.ones(80), freqs, band=None)
+    assert abs(fx - 0.5) < 0.1, f"crossover steered to {fx} Hz, not ~0.5"
+
+
+def test_crossover_nan_and_empty_band():
+    from eta_field_recon.wavelet_core import aperture_crossover_frequency
+
+    freqs = np.linspace(0.05, 2.0, 80)
+    ratio = np.full(80, 1.7)
+    ratio[40] = 1.2
+    ratio[10] = np.nan                       # must not win via NaN argmin
+    fx = aperture_crossover_frequency(ratio, np.ones(80), freqs, band=None)
+    assert np.isfinite(fx) and abs(fx - freqs[40]) < 0.1
+    with pytest.raises(ValueError):
+        aperture_crossover_frequency(ratio, np.ones(80), freqs, band=(5.0, 6.0))
+
+
+def test_aperture_transfer_nan_k_passthrough():
+    """NaN wavenumber (blocked frequency) must yield NaN transfer and NaN
+    gain, not a silently plausible H = 1."""
+    import warnings as _w
+    from eta_field_recon.wavelet_core import (aperture_transfer_function,
+                                              aperture_transfer_gain)
+
+    H = aperture_transfer_function(np.array([0.1, np.nan, 5.0]), 1.0)
+    assert np.isnan(H[1]) and np.isfinite(H[0]) and np.isfinite(H[2])
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", UserWarning)
+        gain = aperture_transfer_gain(np.array([0.1, 0.2, 0.3]),
+                                      np.array([0.1, np.nan, 5.0]), 1.0)
+    assert np.isnan(gain[1])
+
+
+def test_empty_aperture_mask_raises():
+    """An aperture smaller than the cell spacing selects no cells; that must
+    raise, not return an all-NaN spatial mean."""
+    from eta_field_recon.recon import _circular_aperture_mask
+
+    with pytest.raises(ValueError):
+        _circular_aperture_mask(24, 24, dx=0.1, diameter_m=0.05)
+
+
+def test_skirt_correction_nan_not_clamped():
+    """Uncalibratable skirt bands must come back NaN (with a warning), not
+    silently interpolated and clamped; NaN bands are dropped at application."""
+    import warnings as _w
+    from eta_field_recon.wavelet_core import skirt_correction, krogstad_eta_coeffs
+
+    fs, T = 4.0, 128                          # short record: low bands fail COI
+    freqs = np.linspace(0.05, 1.5, 40)
+    _, k = lindisp_with_current(2 * np.pi * freqs, 100.0, 0.0)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter("always")
+        sg = skirt_correction(freqs, fs, k, T, None, per_scale=True)
+    assert np.isnan(sg).any(), "expected NaN for COI-blocked low bands"
+    assert any("uncalibratable" in str(w.message) for w in rec)
+    # NaN gain drops the band instead of poisoning the coefficients
+    Wsx = np.ones((freqs.size, T), dtype=complex)
+    Wsy = np.zeros_like(Wsx)
+    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k, skirt_gain=sg)
+    assert np.isfinite(W_eta).all()
+    assert (W_eta[np.isnan(sg)] == 0).all()
+
+
+def test_inverse_cwt_single_band_returns_zeros():
+    import warnings as _w
+    from eta_field_recon.wavelet_core import _inverse_cwt
+
+    W = np.ones((1, 128), dtype=complex)
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", UserWarning)
+        out = _inverse_cwt(W, np.array([0.5]), 4.0, None, per_scale=False)
+        out2 = _inverse_cwt(W, np.array([0.5]), 4.0, None, per_scale=True)
+    assert out.shape == (128,) and np.all(out == 0)
+    assert out2.shape == (128,) and np.all(out2 == 0)
+
+
+def test_recolor_band_ceiling_and_window():
+    """Recolor must not deposit amplitude above fmax (where the carrier phase
+    is undefined), and the windowed amplitude estimate stays calibrated."""
+    from eta_field_recon.wavelet_core import recolor_to_direct_spectrum
+
+    fs, T, g = 10.0, 2048, 9.806
+    t = np.arange(T) / fs
+    f0, A = 0.2, 0.4
+    k0 = (2 * np.pi * f0) ** 2 / g
+    eta_krog = A * np.cos(2 * np.pi * f0 * t)
+    sx = A * k0 * np.sin(2 * np.pi * f0 * t)
+    # add a strong out-of-band tone in the slopes
+    f_hi = 3.0
+    k_hi = (2 * np.pi * f_hi) ** 2 / g
+    sx_hi = sx + 0.4 * k_hi * np.sin(2 * np.pi * f_hi * t)
+    eta = recolor_to_direct_spectrum(
+        eta_krog, [(sx_hi, np.zeros(T), None)], fs, 100.0, fmax=2.0)
+    F = np.abs(np.fft.rfft(eta - eta.mean()))
+    fr = np.fft.rfftfreq(T, 1 / fs)
+    in_band = F[(fr > 0.1) & (fr < 0.4)].sum()
+    out_band = F[fr > 2.0].sum()
+    assert out_band < 0.01 * in_band, "energy deposited above the fmax ceiling"
+    # amplitude calibration survives the windowing (compare to truth std)
+    m = slice(T // 4, 3 * T // 4)
+    ratio = eta[m].std() / eta_krog[m].std()
+    assert 0.8 < ratio < 1.25

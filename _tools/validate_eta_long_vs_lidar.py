@@ -20,15 +20,15 @@ series is expected and physical. This script:
   5. writes a figure: both time series (lag-aligned) + the cross-correlation.
 
 Run:
-    uv run python tools/validate_eta_long_vs_lidar.py
+    uv run python _tools/validate_eta_long_vs_lidar.py
     # options:
     #   --out  validation_eta_long_vs_lidar.png   (figure path)
     #   --max-lag  30   (s; search window for the lag, default 30)
     #   --band  0.05 0.5  (Hz; band-limit both series before correlating)
 
 Requires both committed artifacts:
-    examples/asit2019_mean_slope_60s.nc       (PSS spatial-mean slope)
-    examples/asit2019_lidar_elevation_10min.nc (Riegl lidar elevation)
+    _data/asit2019_mean_slope_60s.nc       (PSS spatial-mean slope)
+    _data/asit2019_lidar_elevation_10min.nc (Riegl lidar elevation)
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import butter, filtfilt
 
-# make examples/_data importable regardless of invocation
+# make the _data package importable regardless of invocation
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _data  # noqa: E402
 
@@ -70,7 +70,7 @@ def main():
     ap.add_argument("--out", type=Path,
                     default=Path("validation_eta_long_vs_lidar.png"))
     ap.add_argument("--max-lag", type=float, default=30.0,
-                    help="max |lag| to search about the frame-7001 anchor, "
+                    help="max |lag| to search about the start-frame anchor, "
                          "seconds (default 30)")
     ap.add_argument("--start-frame", type=int, default=7001,
                     help="acquisition frame at which the PSS example record "
@@ -123,6 +123,11 @@ def main():
     def _zn(w):
         return (w - w.mean()) / (w.std() + 1e-30)
 
+    if seg.size < n_eta:
+        raise SystemExit(
+            f"lidar segment around the frame-{args.start_frame} anchor is "
+            f"shorter than the eta record ({seg.size} < {n_eta} samples); "
+            f"check --start-frame against the lidar duration.")
     offsets = np.arange(seg.size - n_eta + 1)
     xc = np.array([np.dot(a, _zn(seg[o:o + n_eta])) / n_eta for o in offsets])
     lags_k = (offsets - (i0 - lo_i)) / fs          # residual lag about the anchor
@@ -131,7 +136,7 @@ def main():
     lag_peak = lags_k[pk]
     r_peak = xc[pk]
     print(f"\ncross-correlation (band {f_lo}-{f_hi:.2f} Hz):")
-    print(f"  frame-7001 anchor = {stack_t0:.1f} s into the acquisition")
+    print(f"  frame-{args.start_frame} anchor = {stack_t0:.1f} s into the acquisition")
     print(f"  residual lag      = {lag_peak:+.2f} s "
           f"(lidar best match at {stack_t0 + lag_peak:.1f} s)")
     print(f"  waveform corr     = {r_peak:.3f}")
@@ -174,9 +179,9 @@ def main():
     ax2.plot(lags_k, xc_k, lw=1.3, color="#3b2f8f")
     ax2.axvline(lag_peak, color="k", ls="--", lw=1,
                 label=f"residual lag {lag_peak:+.2f} s, r={r_peak:.2f}")
-    ax2.set_xlabel("residual lag [s]  (about the frame-7001 anchor)")
+    ax2.set_xlabel(f"residual lag [s]  (about the frame-{args.start_frame} anchor)")
     ax2.set_ylabel("normalized cross-correlation")
-    ax2.set_title("Cross-correlation about the frame-7001 anchor")
+    ax2.set_title(f"Cross-correlation about the frame-{args.start_frame} anchor")
     ax2.legend(loc="upper right")
     ax2.grid(alpha=0.3)
 

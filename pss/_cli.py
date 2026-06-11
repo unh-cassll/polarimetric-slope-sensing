@@ -3,12 +3,12 @@ Console-script entry points for `pip install pss`.
 
 The actual CLI logic lives in the example scripts at the repo root (under
 `examples/`). Those scripts are designed to be runnable in-place
-(`python examples/load_and_reduce.py ...`) without installation. When the
+(`python _examples/load_and_reduce.py ...`) without installation. When the
 package is pip-installed, this module re-exposes them as the console scripts
 declared in pyproject.toml:
 
-    pss-load-reduce         <- examples/load_and_reduce.py
-    pss-load-reduce-median  <- examples/load_and_reduce_with_median_gain.py
+    pss-load-reduce         <- _examples/load_and_reduce.py
+    pss-load-reduce-median  <- _examples/load_and_reduce_with_median_gain.py
     pss-eta-demo            <- eta_field_recon/demo_eta_field.py
 
 We bridge by adding the script's directory to sys.path on demand and
@@ -34,7 +34,7 @@ def _import_main_from(script_relpath: str, func_name: str = "main"):
             f"could not locate console-script source at {script_path}; "
             f"if you installed from a wheel, the auxiliary scripts may "
             f"not have been bundled. Run the package modules directly "
-            f"instead (e.g. `python examples/load_and_reduce.py`)."
+            f"instead (e.g. `python _examples/load_and_reduce.py`)."
         )
     spec = importlib.util.spec_from_file_location(
         f"_pss_cli_{script_path.stem}", script_path,
@@ -56,9 +56,9 @@ def load_and_reduce_median_gain_main(argv: list[str] | None = None) -> int:
 
 
 def eta_demo_main(argv: list[str] | None = None) -> int:
-    """Run the eta-reconstruction demo. Returns the int exit code of the
-    demo script (which uses `if __name__ == '__main__'` rather than a
-    `main()` function, so we shell out via runpy)."""
+    """Run the eta-reconstruction demo via runpy (the script uses
+    `if __name__ == '__main__'` rather than a main() function). Always
+    returns 0; a sys.exit inside the demo propagates as SystemExit."""
     import runpy
     pkg_dir = Path(__file__).resolve().parent       # .../pss/
     repo_root = pkg_dir.parent                      # repo root

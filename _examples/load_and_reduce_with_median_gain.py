@@ -8,7 +8,7 @@ This is the canonical E-PSS empirical-gain workflow (Laxague et al.):
 
 The gain is derived once from the stable temporal-median frame and then
 applied to each individual frame. This differs from the single-frame demo
-(`load_and_reduce.py`), which derives the gain from the frame it is correcting
+(`load_and_reduce.py`), which applies no empirical gain unless a reference is supplied
 and therefore forces every frame's median DoLP onto the Fresnel ideal --
 erasing the real frame-to-frame DoLP variability that carries the wave signal.
 
@@ -92,7 +92,7 @@ def _plot_result(result, frame_shape, gain_source: str) -> plt.Figure:
         f"gain={result.gain_mode} (g={result.gain_g1:.4f}, from {gain_source})\n"
         f"median DoLP = {np.nanmedian(result.dolp):.4f}, "
         f"median AOI = {np.nanmedian(result.aoi_deg):.3f} deg, "
-        f"mss = {result.mss:.4f} deg^2",
+        f"mss = {result.mss:.6f} (dimensionless)",
         fontsize=11,
     )
     panels = [
@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  median DoLP   : {np.nanmedian(result.dolp):.4f}  "
           f"(this frame, post-gain; NOT forced to the Fresnel ideal)")
     print(f"  median AOI    : {np.nanmedian(result.aoi_deg):.3f} deg")
-    print(f"  mss           : {result.mss:.4f} deg^2")
+    print(f"  mss           : {result.mss:.6f}  (dimensionless, var(Sx)+var(Sy))")
 
     # 5) Plot.
     fig = _plot_result(result, frame.shape, gain_source="median frame")

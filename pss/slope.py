@@ -28,8 +28,8 @@ class SlopeResult:
     dolp: np.ndarray    # degree of linear polarization (clipped to [0, 1])
     orientation_deg: np.ndarray  # polarization orientation phi in degrees
     aoi_deg: np.ndarray          # angle of incidence theta_i in degrees
-    Sx: np.ndarray      # cross-look slope (de-meaned)
-    Sy: np.ndarray      # along-look slope (de-meaned)
+    Sx: np.ndarray      # cross-look slope (mean retained; carries the swell tilt)
+    Sy: np.ndarray      # along-look slope (mean retained; carries the swell tilt)
     Ax_deg: np.ndarray  # cross-look angle = atan(Sx) in degrees
     Ay_deg: np.ndarray  # along-look angle  = atan(Sy) in degrees
     mss: float          # mean-square slope = var(Sx) + var(Sy)  [dimensionless]
@@ -51,6 +51,7 @@ def compute_slope_field(
     n_water: float = 1.34,
     lookup_table: tuple[np.ndarray, np.ndarray] | None = None,
     gain_reference_frame: np.ndarray | None = None,
+    dolp_obs_median: float | None = None,
 ) -> SlopeResult:
     """Compute the full slope-field result from a raw DoFP frame.
 
@@ -62,9 +63,8 @@ def compute_slope_field(
         Output spatial resolution.
 
         - "native" (default): one Stokes vector per 2x2 super-pixel, returned
-          at HALF resolution (H/2, W/2) with no interpolation. This is honest
-          with respect to information content -- the output grid equals the
-          measurement grid. The `method` argument is ignored. The effective
+          at HALF resolution (H/2, W/2) with no interpolation; the output grid
+          equals the measurement grid. The `method` argument is ignored. The effective
           pixel pitch is twice the sensor pitch (pass the doubled dx to any
           downstream wavelength/spectrum computation).
         - "full": interpolate each orientation back to the full (H, W) grid
@@ -92,7 +92,14 @@ def compute_slope_field(
         `frame` itself. This is the E-PSS workflow: calibrate the gain
         against the per-pixel temporal-median background frame, then apply
         that single scalar to the individual frame being reduced. Only used
-        when gain_mode == "empirical".
+        when gain_mode == "empirical". Takes precedence over
+        `dolp_obs_median`.
+    dolp_obs_median : float, optional
+        Pre-computed reference DoLP median for the empirical gain (see
+        pss.gain.apply_gain). Lets a driver reduce the reference frame once
+        and reuse the scalar across a record instead of re-reducing the
+        reference per frame. Only used when gain_mode == "empirical" and
+        `gain_reference_frame` is None.
     """
     method_kwargs = method_kwargs or {}
     resolution = resolution.lower()
@@ -124,6 +131,7 @@ def compute_slope_field(
         n_water=n_water,
         s1_ref=s1_ref,
         s2_ref=s2_ref,
+        dolp_obs_median=dolp_obs_median,
     )
     s1c, s2c = gres.s1, gres.s2
 

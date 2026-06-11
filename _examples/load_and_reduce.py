@@ -93,7 +93,7 @@ def _plot_result(result, frame_shape, title_suffix=""):
         f"gain={result.gain_mode} (g={result.gain_g1:.4f}) {title_suffix}\n"
         f"median DoLP = {np.nanmedian(result.dolp):.4f}, "
         f"median AOI = {np.nanmedian(result.aoi_deg):.3f} deg, "
-        f"mss = {result.mss:.4f} deg^2",
+        f"mss = {result.mss:.6f} (dimensionless)",
         fontsize=11,
     )
     panels = [
@@ -168,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
         print("error: gain_mode='empirical' requires theta_i; pass --theta")
         return 2
 
-    src = "median frame" if median_frame is not None else "self"
+    src = ("median frame" if median_frame is not None
+           else "none -> no empirical gain applied")
     print(f"Reducing with method={method}, gain={gain} (ref={src}), "
           f"theta_i={theta_i}...")
     result = compute_slope_field(
@@ -185,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  notes         : {result.gain_notes}")
     print(f"  median DoLP   : {np.nanmedian(result.dolp):.4f}")
     print(f"  median AOI    : {np.nanmedian(result.aoi_deg):.3f} deg")
-    print(f"  mss           : {result.mss:.4f} deg^2")
+    print(f"  mss           : {result.mss:.6f}  (dimensionless, var(Sx)+var(Sy))")
 
     # 5) Plot.
     fig = _plot_result(result, frame.shape, title_suffix=f"[ref={src}]")

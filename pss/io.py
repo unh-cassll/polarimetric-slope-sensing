@@ -4,7 +4,7 @@ NetCDF I/O for raw DoFP frames.
 This module reads frames written to the pss/E-PSS NetCDF schema (CF-1.10 +
 ACDD-1.3) and returns the raw array together with the metadata needed to
 drive `compute_slope_field`. Example files ship with the package and longer
-time series are distributed via a Zenodo archive (see examples/_data.py).
+time series are distributed via a Zenodo archive (see the _data package).
 
 A typical workflow:
 
@@ -252,5 +252,12 @@ def apply_layout_from_meta(meta: FrameMetadata) -> None:
     """
     if not meta.layout:
         return
+    required = {"I0", "I45", "I90", "I135"}
+    if set(meta.layout) != required:
+        # An incomplete or mis-angled layout would KeyError deep inside the
+        # Stokes reconstruction; fail here with the actual content instead.
+        raise ValueError(
+            f"superpixel layout must map exactly {sorted(required)}; "
+            f"file supplies {sorted(meta.layout)}")
     from . import stokes as _stokes
     _stokes._OFFSETS = dict(meta.layout)

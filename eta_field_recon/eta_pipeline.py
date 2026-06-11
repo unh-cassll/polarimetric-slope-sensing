@@ -26,19 +26,20 @@ Pixel scale note
 projected spacing of one output sample on the water, NOT the sensor pixel
 pitch. The two differ by the imaging geometry (focal length, range to the
 surface) and, at pss's default "native" resolution, by a further factor of
-two (one Stokes vector per 2x2 super-pixel). The NetCDF file stores the
-sensor `pixel_pitch` (micrometers) but not a focal length, so this driver
-does NOT try to infer the ground dx. You must pass `ground_dx_m` explicitly.
-A typical way to get it:
+two (one Stokes vector per 2x2 super-pixel). With `orthorectify=True` the
+driver derives the ground dx from the file's optics (freeboard, theta_i,
+focal length, pixel pitch). With `orthorectify=False` you must pass
+`ground_dx_m` explicitly:
 
     ground_dx_m = (range_to_surface_m / focal_length_m) * sensor_pitch_m
 
-and then double it if you reduced at resolution="native". Passing the wrong
-dx rescales every wavelength and the dispersion-relation inversion with it,
-so this is deliberately not guessed.
+doubled if the reduction is at resolution="native". Passing the wrong dx
+rescales every wavelength and the dispersion-relation inversion with it, so
+it is never guessed.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,7 @@ from pss import (
     read_netcdf_frame,
 )
 
-from .recon import reconstruct_eta_field
+from .recon import reconstruct_eta_field, long_wave_gate
 from .orthorectify import orthorectify_static, OrthoResult
 
 
@@ -87,6 +88,9 @@ class PipelineResult:
     gate_threshold_s: float      # minimum duration that would enable long_wave
     f_min_hz: float              # lowest CWT frequency the gate is keyed to
     gate_reason: str             # human-readable explanation of the decision
+    gain_mode_applied: str | None = None  # gain actually applied to the frames
+                                          # (the request can downgrade to "none")
+    gain_notes: str = ""         # per-frame gain note from the reduction
     orthorectified: bool = False # whether static orthorectification was applied
     ortho: Any = None            # OrthoResult when orthorectified, else None
     # Optional passthrough of the reduced (and, if orthorectify=True,
@@ -222,6 +226,9 @@ def reconstruct_eta_from_record(
         PipelineResult.
     """
     path = Path(path)
+    # Normalize early: compute_slope_field lowercases `resolution`, so the
+    # pitch-doubling checks below must compare on the same form.
+    resolution = str(resolution).lower()
 
     # ------------------------------------------------------------------
     # Resolve frame count, frame rate, depth from the file (+ overrides).
@@ -312,13 +319,12 @@ def reconstruct_eta_from_record(
     # Length gate (physics-based): does the record span enough of the
     # lowest CWT frequency's period to attempt the long-wave inversion?
     # ------------------------------------------------------------------
-    f_min = float(freqs_cwt.min()) if freqs_cwt is not None else 0.05
-    longest_period_s = 1.0 / f_min
-    gate_threshold_s = min_periods * longest_period_s
     record_duration_s = n_frames / fs_hz
+    gate_ok, gate_threshold_s, f_min = long_wave_gate(
+        record_duration_s, freqs_cwt, min_periods)
 
     if force_long_wave is None:
-        long_wave = record_duration_s >= gate_threshold_s
+        long_wave = gate_ok
         if long_wave:
             gate_reason = (
                 f"record {record_duration_s:.2f} s >= threshold "
@@ -357,7 +363,21 @@ def reconstruct_eta_from_record(
     # ------------------------------------------------------------------
     # Reduce every frame to a slope field and stack.
     # ------------------------------------------------------------------
-    def _reduce(frame: np.ndarray) -> Any:
+    # Per-record invariants, hoisted out of the frame loop: the Fresnel
+    # lookup (a 200k-point PCHIP fit) and the empirical-gain reference DoLP
+    # (a full Stokes reduction of the reference frame).
+    from pss import build_lookup_table
+    _lut = build_lookup_table(n_water=meta.n_water)
+    _dolp_ref = None
+    if gain_reference_frame is not None and str(gain_mode).lower() == "empirical":
+        _ref_res = compute_slope_field(
+            np.asarray(gain_reference_frame), resolution=resolution,
+            method=method, gain_mode="none", n_water=meta.n_water,
+            lookup_table=_lut)
+        _dolp_ref = float(np.nanmedian(
+            np.sqrt(_ref_res.s1 ** 2 + _ref_res.s2 ** 2)))
+
+    def _reduce(frame: np.ndarray, use_ref_frame: bool = False) -> Any:
         return compute_slope_field(
             frame,
             resolution=resolution,
@@ -365,7 +385,11 @@ def reconstruct_eta_from_record(
             gain_mode=gain_mode,
             theta_i_mean_deg=meta.theta_i_mean_deg,
             n_water=meta.n_water,
-            gain_reference_frame=gain_reference_frame,
+            lookup_table=_lut,
+            # Frame 0 reduces against the reference frame itself (canonical
+            # notes/bookkeeping); the rest reuse the precomputed scalar.
+            gain_reference_frame=gain_reference_frame if use_ref_frame else None,
+            dolp_obs_median=None if use_ref_frame else _dolp_ref,
         )
 
     if verbose:
@@ -375,14 +399,25 @@ def reconstruct_eta_from_record(
     if rds < 1:
         raise ValueError(f"reduce_downsample must be >= 1; got {reduce_downsample!r}")
 
-    def _reduce_sub(frame):
+    def _reduce_sub(frame, use_ref_frame=False):
         """Reduce one frame and subsample it (float32) before stacking."""
-        res = _reduce(frame)
+        res = _reduce(frame, use_ref_frame=use_ref_frame)
         sx = np.asarray(res.Sx, dtype=np.float32)[::rds, ::rds]
         sy = np.asarray(res.Sy, dtype=np.float32)[::rds, ::rds]
-        return sx, sy
+        return res, sx, sy
 
-    sx0, sy0 = _reduce_sub(frame0)
+    res0, sx0, sy0 = _reduce_sub(frame0, use_ref_frame=True)
+    # Record the gain that was actually applied (the requested mode can be
+    # silently downgraded, e.g. empirical with no reference -> none).
+    gain_mode_applied = res0.gain_mode
+    gain_notes = res0.gain_notes
+    if (str(gain_mode).lower() == "empirical"
+            and gain_mode_applied != "empirical"):
+        warnings.warn(
+            f"empirical gain was requested (or implied by the file metadata) "
+            f"but could not be applied: {gain_notes or 'no reference'}. "
+            f"Slopes are uncalibrated; pass gain_reference_path= to supply a "
+            f"temporal-median reference.", UserWarning, stacklevel=2)
     Ny, Nx = sx0.shape
     # float32 stack: halves memory vs float64 and is ample precision for a
     # spatially-averaged long-wave slope spectrum.
@@ -393,7 +428,7 @@ def reconstruct_eta_from_record(
 
     for ti in range(1, n_frames):
         frame_i, _ = read_netcdf_frame(path, time_index=ti)
-        sx_i, sy_i = _reduce_sub(frame_i)
+        _, sx_i, sy_i = _reduce_sub(frame_i)
         slope_x[ti] = sx_i
         slope_y[ti] = sy_i
 
@@ -423,8 +458,8 @@ def reconstruct_eta_from_record(
         )
         # griddata leaves NaN outside the footprint; reconstruct_eta_field and
         # g2s need finite slopes. Replace the small no-data border with 0.
-        slope_x = np.nan_to_num(ortho_result.slope_x, nan=0.0)
-        slope_y = np.nan_to_num(ortho_result.slope_y, nan=0.0)
+        slope_x = np.nan_to_num(ortho_result.slope_x, nan=0.0, copy=False)
+        slope_y = np.nan_to_num(ortho_result.slope_y, nan=0.0, copy=False)
         ground_dx_m = ortho_result.dx_m
     elif rds > 1:
         # No orthorectification: the caller-supplied ground_dx_m describes the
@@ -450,10 +485,12 @@ def reconstruct_eta_from_record(
     # finite-difference stencil. The effective output grid is the post-reduce
     # stack shrunk by `downsample`; if that drops below a safe minimum, fail
     # here with an actionable message rather than deep inside g2s.
+    # Applies only when the g2s short-wave integration will actually run;
+    # the long-wave path is a spatial mean and works on any grid.
     G2S_MIN_NODES = 16
     eff_ny = slope_x.shape[1] // max(downsample, 1)
     eff_nx = slope_x.shape[2] // max(downsample, 1)
-    if min(eff_ny, eff_nx) < G2S_MIN_NODES:
+    if short_wave and min(eff_ny, eff_nx) < G2S_MIN_NODES:
         raise ValueError(
             f"reduce_downsample={rds} x downsample={downsample} shrinks the "
             f"output grid to {eff_ny}x{eff_nx}, below the ~{G2S_MIN_NODES}-node "
@@ -494,6 +531,8 @@ def reconstruct_eta_from_record(
         gate_threshold_s=gate_threshold_s,
         f_min_hz=f_min,
         gate_reason=gate_reason,
+        gain_mode_applied=gain_mode_applied,
+        gain_notes=gain_notes,
         orthorectified=orthorectify,
         ortho=ortho_result,
         slope_x=slope_x if return_slopes else None,

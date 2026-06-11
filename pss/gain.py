@@ -183,8 +183,11 @@ def apply_gain(
                 ),
             )
         dolp_ideal = _ideal_dolp_from_theta(theta_i_mean_deg, n_water=n_water)
-        if dolp_obs <= 0:
-            raise ValueError("observed DoLP median is non-positive; cannot compute empirical gain")
+        if not np.isfinite(dolp_obs) or dolp_obs <= 0:
+            raise ValueError(
+                f"observed DoLP median is {dolp_obs!r} (non-finite or "
+                f"non-positive); cannot compute empirical gain -- check the "
+                f"reference frame for all-NaN content")
         g = dolp_ideal / dolp_obs
         lo, hi = clip_gain
         g_clipped = float(np.clip(g, lo, hi))

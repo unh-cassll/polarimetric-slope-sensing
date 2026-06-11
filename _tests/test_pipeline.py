@@ -173,12 +173,13 @@ def test_netcdf_example_full_bilinear(example_nc_path, median_nc_path):
         gain_reference_frame=median_frame,
     )
     assert result.s1.shape == frame.shape
-    # frame0001, full/bilinear, median-referenced gain, theta_i=30, n=1.34:
-    assert result.gain_g1 == pytest.approx(1.5593, abs=0.001)
+    # frame0001, full/bilinear, median-referenced gain, theta_i=30, n=1.34,
+    # with per-channel IFOV registration in the bilinear upsample:
+    assert result.gain_g1 == pytest.approx(1.5592, abs=0.001)
     assert np.median(result.dolp) == pytest.approx(0.3289, abs=0.001)
-    assert np.median(result.aoi_deg) == pytest.approx(26.023, abs=0.01)
+    assert np.median(result.aoi_deg) == pytest.approx(26.019, abs=0.01)
     # mss is the dimensionless slope variance var(Sx) + var(Sy):
-    assert result.mss == pytest.approx(0.021375, abs=1e-5)
+    assert result.mss == pytest.approx(0.021703, abs=1e-5)
 
 
 def test_netcdf_example_full_method4(example_nc_path, median_nc_path):

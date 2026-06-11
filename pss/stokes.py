@@ -89,26 +89,24 @@ def by_superpixel(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray
     return S0, s1, s2
 
 
-def _bilinear_upsample(sub: np.ndarray, out_shape: tuple[int, int]) -> np.ndarray:
+def _bilinear_upsample(sub: np.ndarray, out_shape: tuple[int, int],
+                       r_off: int = 0, c_off: int = 0) -> np.ndarray:
     """Bilinearly upsample a half-resolution sub-image to full resolution.
 
-    Uses scipy.ndimage.map_coordinates for accuracy; no SciPy dependency
-    beyond what we already import for convolve. Each sub-sample sits at the
-    super-pixel center, so the mapping accounts for the half-pixel offset.
+    Sub-image pixel (i, j) sits at full-frame coordinates (2i + r_off,
+    2j + c_off) -- each orientation's micropolarizer occupies a different
+    position in the 2x2 super-pixel, so each channel carries its own
+    (r_off, c_off). Inverting that mapping registers the four channels onto
+    the common full-frame grid (the IFOV correction).
     """
     from scipy.ndimage import map_coordinates
 
     H, W = out_shape
-    # In the full frame, sub-image pixel (i, j) sits at full-frame coordinates
-    # (2i + r_off, 2j + c_off). We invert that mapping.
     rows = np.arange(H, dtype=np.float64)
     cols = np.arange(W, dtype=np.float64)
     rr, cc = np.meshgrid(rows, cols, indexing="ij")
-    # The sub-image samples lie on a regular grid in sub-pixel coordinates.
-    # The half-pixel offset is absorbed by sampling at (rr-0.5)/2 etc., matching
-    # MATLAB's interp2 'linear' on the sparse grid.
-    sub_rr = (rr - 0.5) / 2.0
-    sub_cc = (cc - 0.5) / 2.0
+    sub_rr = (rr - r_off) / 2.0
+    sub_cc = (cc - c_off) / 2.0
     return map_coordinates(sub, [sub_rr, sub_cc], order=1, mode="nearest")
 
 
@@ -122,10 +120,10 @@ def by_bilinear_interpolation(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray
     """
     H, W = frame.shape
     ch = _extract_channels(frame)
-    I0   = _bilinear_upsample(ch["I0"],   (H, W))
-    I45  = _bilinear_upsample(ch["I45"],  (H, W))
-    I90  = _bilinear_upsample(ch["I90"],  (H, W))
-    I135 = _bilinear_upsample(ch["I135"], (H, W))
+    I0   = _bilinear_upsample(ch["I0"],   (H, W), *_OFFSETS["I0"])
+    I45  = _bilinear_upsample(ch["I45"],  (H, W), *_OFFSETS["I45"])
+    I90  = _bilinear_upsample(ch["I90"],  (H, W), *_OFFSETS["I90"])
+    I135 = _bilinear_upsample(ch["I135"], (H, W), *_OFFSETS["I135"])
 
     S0 = 0.5 * (I0 + I45 + I90 + I135)
     S1 = I0 - I90

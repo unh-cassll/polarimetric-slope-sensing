@@ -133,7 +133,9 @@ def test_bare_stack_returns_slopes_only():
     assert r.eta_ran is False
     assert r.gain_mode == "none"
     assert r.slope_x.ndim == 3 and r.slope_x.shape[0] == 4
-    assert len(r.slope_results) == 4
+    assert r.slope_results == []          # retention is opt-in (memory)
+    r2 = run_epss(_raw_stack(4), keep_slope_results=True, verbose=False)
+    assert len(r2.slope_results) == 4
 
 
 def test_partial_geometry_raises():

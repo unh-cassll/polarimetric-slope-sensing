@@ -115,8 +115,14 @@ def dolp_to_aoi(
         DOLP_int = floor(DOLP*10000);
         DOLP_int(DOLP_int<1) = 1; DOLP_int(DOLP_int>10000) = 10000;
         AOI = theta_full(DOLP_int);
+
+    Non-finite DoLP maps to NaN (floor(NaN).astype(int) is undefined and
+    would otherwise silently index theta=0).
     """
     n = len(DOLP_full)
-    idx = np.floor(np.asarray(dolp, dtype=np.float64) * n).astype(np.int64)
+    dolp = np.asarray(dolp, dtype=np.float64)
+    finite = np.isfinite(dolp)
+    idx = np.floor(np.where(finite, dolp, 0.0) * n).astype(np.int64)
     idx = np.clip(idx, 0, n - 1)
-    return theta_full[idx]
+    aoi = np.asarray(theta_full[idx], dtype=np.float64)
+    return np.where(finite, aoi, np.nan)

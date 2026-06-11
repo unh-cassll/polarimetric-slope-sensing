@@ -50,11 +50,13 @@ from pyGrad2Surf.g2s import g2s
 from scipy.signal.windows import tukey, hann
 from ewdm.wavelets import Morlet
 
+import warnings
+
 from .wavelet_core import (_cwt, _inverse_cwt, lindisp_with_current,
                            krogstad_eta_coeffs, skirt_correction,
                            directional_spread, spread_hs_factor,
-                           aperture_transfer_gain, blend_aperture_coeffs,
-                           recolor_to_direct_spectrum)
+                           aperture_transfer_function, aperture_transfer_gain,
+                           blend_aperture_coeffs, recolor_to_direct_spectrum)
 
 
 def _make_2d_window(Ny, Nx, alpha):
@@ -102,7 +104,72 @@ def _circular_aperture_mask(Ny, Nx, dx, diameter_m):
     xc = (np.arange(Nx) - (Nx - 1) / 2.0) * dx
     YY, XX = np.meshgrid(yc, xc, indexing='ij')
     r = np.sqrt(XX ** 2 + YY ** 2)
-    return r <= (diameter_m / 2.0)
+    mask = r <= (diameter_m / 2.0)
+    if not mask.any():
+        # A diameter below the cell spacing can miss every cell center; an
+        # empty mask would silently produce an all-NaN spatial mean.
+        raise ValueError(
+            f"aperture_diameter_m={diameter_m} selects no grid cells at "
+            f"dx={dx} on a {Ny}x{Nx} grid; use a diameter >= the cell spacing")
+    return mask
+
+
+def long_wave_gate(record_duration_s, freqs_cwt=None, min_periods=0.5):
+    """Physics gate for the long-wave inversion.
+
+    The record must span at least `min_periods` periods of the lowest CWT
+    frequency. Returns (enabled, threshold_s, f_min_hz); callers format their
+    own messages. Single source of the gate logic shared by run_epss,
+    run_epss_from_slopes, and reconstruct_eta_from_record.
+    """
+    f_min = float(np.min(freqs_cwt)) if freqs_cwt is not None else 0.05
+    threshold_s = float(min_periods) / f_min
+    return record_duration_s >= threshold_s, threshold_s, f_min
+
+
+def invert_mean_slope_series(sx_mean, sy_mean, fs, water_depth_m=100.0,
+                             freqs_cwt=None, mother=None,
+                             inverse_per_scale=False, skirt_correct=False,
+                             temporal_window='tukey', temporal_alpha=0.25):
+    """Long-wave elevation eta_long(t) from spatial-mean slope series.
+
+    The single-point form of the long-wave path in reconstruct_eta_field:
+    de-mean, window, CWT, Krogstad signed projection through the dispersion
+    relation, inverse CWT. Used by _data.mean_wave_timeseries; importable for
+    any externally produced mean-slope series.
+
+    Args:
+        sx_mean, sy_mean : (T,) cross-look / along-look spatial-mean slope.
+        fs               : sample rate (Hz).
+        water_depth_m    : depth for the dispersion relation.
+        freqs_cwt        : CWT grid (Hz); default linspace(0.05, 2.0, 80).
+        mother           : EWDM mother wavelet; default Morlet(6.0).
+        inverse_per_scale, skirt_correct : calibration switches, as in
+            reconstruct_eta_field.
+        temporal_window, temporal_alpha : taper, as in reconstruct_eta_field.
+
+    Returns:
+        eta_long : (T,) elevation series (m), up-positive.
+    """
+    sx = np.asarray(sx_mean, dtype=float)
+    sy = np.asarray(sy_mean, dtype=float)
+    T = sx.size
+    if freqs_cwt is None:
+        freqs_cwt = np.linspace(0.05, 2.0, 80)
+    win = _make_temporal_window(T, temporal_window, temporal_alpha)
+    sx = sx - sx.mean()
+    sy = sy - sy.mean()
+    Wsx = _cwt(sx * win, freqs_cwt, fs, mother).values
+    Wsy = _cwt(sy * win, freqs_cwt, fs, mother).values
+    _, k_disp = lindisp_with_current(2 * np.pi * freqs_cwt, water_depth_m, 0.0)
+    skirt_gain = None
+    if skirt_correct:
+        skirt_gain = skirt_correction(freqs_cwt, fs, k_disp, T, mother,
+                                      per_scale=inverse_per_scale,
+                                      temporal_alpha=temporal_alpha)
+    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=skirt_gain)
+    return _inverse_cwt(W_eta, freqs_cwt, fs, mother,
+                        per_scale=inverse_per_scale)
 
 
 def _aperture_spatial_mean(field_stack, mask):
@@ -156,12 +223,12 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         inverse_per_scale : if True, the long-wave inverse CWT uses the
                         per-frequency reconstruction-gain calibration instead
                         of the single 1.4383 constant (see
-                        wavelet_core._inverse_cwt).  Default False (unchanged).
+                        wavelet_core._inverse_cwt).  Default False.
         skirt_correct : if True, apply the krogstad 1/k(omega) skirt
                         correction (see wavelet_core.skirt_correction) so a
                         unit monochromatic surface component reconstructs at
                         unit amplitude.  Paired with inverse_per_scale.
-                        Default False (unchanged).
+                        Default False.
         aperture_transfer_correct : if True, divide the long-wave elevation by
                         the aperture transfer function (see
                         wavelet_core.aperture_transfer_gain) to undo the spatial
@@ -170,14 +237,14 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         or a square transfer of the full downsampled frame side
                         when aperture_diameter_m is None. Bands at/beyond the
                         aperture null are dropped (their energy is unrecoverable).
-                        Default False (unchanged).
+                        Default False.
         recolor_direct : if True, replace eta_long's amplitude spectrum with the
                         directionally-complete direct estimate while keeping the
                         Krogstad phase (see wavelet_core.recolor_to_direct_spectrum),
                         closing the ~25% projection-loss shortfall. Uses the
                         disc-mean slopes (jinc-corrected and aperture-blended when
                         aperture_diameters_m is set) high-passed above recolor_fmin.
-                        Default False (unchanged).
+                        Default False.
         recolor_fmin  : high-pass corner (Hz) for the recolor. Default 0.08.
 
         spatial_alpha    : Tukey alpha for the 2-D slope window.
@@ -212,7 +279,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         over which the slope is averaged to form the spatial-
                         mean slope series that drives the long-wave inversion.
                         Default None = full frame (average over the entire
-                        downsampled grid, the original behavior). A finite
+                        downsampled grid). A finite
                         value restricts the average to the largest centered
                         disc of that diameter that fits in the frame, which is
                         useful when only a central sub-region of the footprint
@@ -352,6 +419,12 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
             # diameter, then frequency-blend largest-disc-first so the clean
             # large disc carries low f and the less-suppressed small disc carries
             # the intermediate band (handoff at the maximum-overlap frequency).
+            if aperture_transfer_correct:
+                warnings.warn(
+                    "aperture_transfer_correct is ignored when "
+                    "aperture_diameters_m is set; the multi-aperture blend "
+                    "supersedes the single-disc transfer correction.",
+                    UserWarning, stacklevel=2)
             diams = sorted((float(d) for d in aperture_diameters_m), reverse=True)
             if verbose:
                 print(f"    multi-aperture long wave: discs {diams} m (blended)")
@@ -363,7 +436,15 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                 recolor_discs.append((sxm, sym, d))
                 if prim is None:                 # largest disc = diag reference
                     prim = (ct, st, Wx, Wy, sxm, sym)
-            W_eta, crossovers = blend_aperture_coeffs(W_list, freqs_cwt)
+            # Handoff search band: above the CWT floor, below the largest
+            # disc's transfer null (past it the large-disc power is aperture
+            # artifact, not signal).
+            H0 = aperture_transfer_function(k_disp, diams[0])
+            past = np.flatnonzero(np.abs(H0) < 0.3)
+            f_lo = float(freqs_cwt[0])
+            f_hi = float(freqs_cwt[past[0]]) if past.size else float(freqs_cwt[-1])
+            band = (f_lo, max(f_hi, 2.0 * f_lo))
+            W_eta, crossovers = blend_aperture_coeffs(W_list, freqs_cwt, band=band)
             cos_th, sin_th, Wsx, Wsy, sx_mean, sy_mean = prim
         else:
             W_eta, cos_th, sin_th, Wsx, Wsy, sx_mean, sy_mean = _disc_W_eta(aperture_mask)
@@ -376,8 +457,11 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                     aperture_gain = aperture_transfer_gain(
                         freqs_cwt, k_disp, aperture_diameter_m, shape="circular")
                 else:
+                    # Equal-area square side; exact for square frames, an
+                    # approximation for rectangular ones.
+                    side = float(np.sqrt(Ny_d * Nx_d)) * dx_ds
                     aperture_gain = aperture_transfer_gain(
-                        freqs_cwt, k_disp, Nx_d * dx_ds, shape="square")
+                        freqs_cwt, k_disp, side, shape="square")
                 W_eta = W_eta * aperture_gain[:, None]
                 W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
 
@@ -394,7 +478,9 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
             eta_long_krog = eta_long
             eta_long = recolor_to_direct_spectrum(
                 eta_long, recolor_discs, fs, water_depth_m,
-                highpass_fmin=recolor_fmin)
+                highpass_fmin=recolor_fmin,
+                fmax=float(np.max(freqs_cwt)),
+                window_alpha=temporal_alpha)
 
         # Directional spread (reported, not auto-applied): r2 second moment and
         # the Hs correction factor for the projection's off-axis variance loss.

@@ -42,8 +42,8 @@ def lindisp_with_current(omega, h, current_m_s):
                       direction (m/s).  Use 0 for no current.
 
     Returns:
-        c : phase speed   omega/k     (same shape as omega)
-        k : wavenumber    (rad/m)
+        c : phase speed   omega/k     (1-D, on the flattened omega)
+        k : wavenumber    (rad/m)     (1-D, on the flattened omega)
     """
     omega = np.atleast_1d(omega).flatten().astype(float).copy()
     h = float(np.atleast_1d(h).flatten()[0])
@@ -67,8 +67,11 @@ def lindisp_with_current(omega, h, current_m_s):
             f"increasing branch, higher omega -> NaN k.", UserWarning, stacklevel=2)
         k_vec = k_vec[:cut]
         omega_disp = omega_disp[:cut]
+    if k_vec.size < 2:
+        # Supercritical opposing current: no increasing branch to invert.
+        return omega / np.nan, np.full_like(omega, np.nan)
     k_from_omega = interpolate.interp1d(
-        omega_disp, k_vec, kind='cubic',
+        omega_disp, k_vec, kind='cubic' if k_vec.size >= 4 else 'linear',
         bounds_error=False, fill_value=np.nan)
     k = k_from_omega(omega)
     return omega / k, k
@@ -132,19 +135,6 @@ def _mother_cdelta(mother):
             UserWarning, stacklevel=2)
         _CDELTA_WARNED.add(key)
     return abs(cd) if (cd is not None and cd != 0) else 1.0
-
-
-def _fill_nonfinite_linear(a):
-    """Replace non-finite entries by linear interpolation over finite ones."""
-    a = np.asarray(a, dtype=float)
-    good = np.isfinite(a)
-    if good.all():
-        return a
-    if not good.any():
-        return np.ones_like(a)
-    idx = np.arange(a.size)
-    a[~good] = np.interp(idx[~good], idx[good], a[good])
-    return a
 
 
 def _bare_inverse(W, freqs, fs, mother):
@@ -236,10 +226,10 @@ def _inverse_cwt(W, freqs, fs, mother=None, per_scale=False):
 
     Two normalization modes:
 
-    - per_scale=False (default): the original behavior.  The bare TC
-      reconstruction under-shoots variance by ~0.696 with EWDM's CWT
-      normalization, so a single universal constant 1.4383 (~sqrt(2)) is
-      applied, giving 1-3% round-trip fidelity across grids.
+    - per_scale=False (default): the bare TC reconstruction under-shoots
+      variance by ~0.696 with EWDM's CWT normalization, so a single universal
+      constant 1.4383 (~sqrt(2)) is applied, giving 1-3% round-trip fidelity
+      across grids.
 
     - per_scale=True: replace the single constant with a per-frequency
       reconstruction gain calibrated, at call time, by round-tripping unit
@@ -258,6 +248,14 @@ def _inverse_cwt(W, freqs, fs, mother=None, per_scale=False):
         eta(t) : (T,) real reconstructed time series
     """
     freqs = np.asarray(freqs, dtype=float)
+    W = np.asarray(W)
+    if freqs.size < 2:
+        # np.gradient needs >=2 scales for the inverse spacing; a single band
+        # is unreconstructable, so return zeros rather than crash.
+        warnings.warn(
+            "inverse CWT needs >= 2 frequency bands; returning zeros.",
+            UserWarning, stacklevel=2)
+        return np.zeros(W.shape[1])
 
     if not per_scale:
         if mother is None:
@@ -270,7 +268,6 @@ def _inverse_cwt(W, freqs, fs, mother=None, per_scale=False):
                   (_mother_cdelta(mother) * (np.pi ** -0.25)))
         return weight * (np.real(W) / scales[:, None]**1.5 * ds[:, None]).sum(axis=0)
 
-    W = np.asarray(W)
     g = _per_scale_gain(freqs, fs, W.shape[1], mother)
     # Uncalibratable bands carry NaN gain; drop them (zero contribution) so a
     # single bad band does not poison the whole reconstruction.
@@ -302,20 +299,18 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
     relative phase between Wsy and Wsx this way resolves the 180-degree
     ambiguity that slope magnitude alone cannot.
 
-    Guard: np.sign(0) == 0, which would ZERO sin_th whenever Wsx (or the
-    relative phase) vanishes -- e.g. a wave traveling exactly along the
-    along-look axis, where Wsx == 0. That would incorrectly annihilate the
-    signal. When the relative phase is indeterminate there is no information
-    to flip the sign, so it defaults to +1 (keep the magnitude) rather than 0
-    (destroy it). The sign(0)->+1 guard is correct on-axis; the real on-axis
-    failure mode is not a wrong sign but sign VARIANCE across (f, t) when the
-    cross-look channel is noise -- handled by the band-locked sign below.
+    Guard: np.sign(0) == 0 would zero sin_th wherever Wsx (or the relative
+    phase) vanishes -- e.g. a wave traveling exactly along the along-look
+    axis -- annihilating the signal. An indeterminate phase carries no sign
+    information, so it defaults to +1 (keep the magnitude). The remaining
+    on-axis failure mode is sign variance across (f, t) when the cross-look
+    channel is noise, handled by the band-locked sign below.
 
     The elevation coefficient is the slope projection divided by the
     wavenumber. Under ewdm's CWT convention slope = d(eta)/dx maps to a
     factor of -i*k in the wavelet domain, so the inverse carries +1j
-    (verified empirically: a unit cos(wt) slope input reconstructs +cos(wt),
-    not -cos -- see skirt_correction's self-calibration):
+    (a unit cos(wt) slope input reconstructs +cos(wt); -1j inverts the
+    surface):
 
         W_eta = +1j * (cos_th * Wsx + sin_th * Wsy) / k
 
@@ -329,7 +324,7 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
         skirt_gain : optional (nf,) per-frequency correction for the
                    finite-bandwidth 1/k(omega) skirt reshaping (see
                    skirt_correction).  If given, W_eta is multiplied by
-                   skirt_gain[:, None] before return.  Default None (unchanged).
+                   skirt_gain[:, None] before return.  Default None.
 
     Returns:
         W_eta  : (nf, T) complex elevation CWT coefficients.
@@ -344,25 +339,33 @@ def krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=None):
 
     # Band-locked sign on the along-look axis: where cross-look is weak vs
     # along-look, the pointwise sign is noise and flips across (f, t), so the
-    # inverse-CWT sum loses amplitude (the 90/270 deg Hs dip). Lock those points
-    # to one dominant sign (preserves Hs, only flips the whole surface); off-axis
-    # points keep the pointwise sign.
+    # inverse-CWT sum loses amplitude (the 90/270 deg Hs dip). Lock those
+    # points to a dominant sign chosen per frequency row by coherence: a row
+    # whose relative phase is direction-coherent (|sum| ~ sum|.|) keeps its
+    # own sign, so opposing systems at different frequencies stay distinct; an
+    # incoherent row (noise, |sum| ~ sum|.|/sqrt(T)) takes the global sign so
+    # noise rows cannot cancel each other. Off-axis points keep the pointwise
+    # sign.
     weak = np.abs(Wsx) < _AXIS_LOCK_FRAC * np.abs(Wsy)
-    dom = np.sign(cross.sum()) or 1.0
+    row_sum = cross.sum(axis=1, keepdims=True)
+    coh = np.abs(row_sum) / (np.abs(cross).sum(axis=1, keepdims=True) + eps)
+    dom_global = np.sign(cross.sum()) or 1.0
+    dom = np.where(coh > 0.5, np.sign(row_sum), dom_global)
+    dom = np.where(dom == 0, 1.0, dom)
     rel_sign = np.where(weak, dom, rel_sign)
 
     cos_th = np.abs(Wsx) / mag
     sin_th = (np.abs(Wsy) / mag) * rel_sign
-    # k may carry NaN (omega = 0) or inf; the division is expected to produce
-    # non-finite entries there, which we immediately zero out. Silence the
-    # warning since this is by-design, not an error.
+    # k may carry NaN (omega = 0) or inf; resulting non-finite entries are
+    # zeroed below, so the divide warning is suppressed.
     with np.errstate(divide="ignore", invalid="ignore"):
-        # +1j (not -1j): ewdm CWT convention; a unit cos slope reconstructs
-        # +cos elevation. -1j inverts the surface (verified vs lidar + synthetic).
+        # +1j per ewdm's CWT convention; -1j inverts the surface.
         W_eta = +1j * (cos_th * Wsx + sin_th * Wsy) / k_disp[:, None]
     W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
     if skirt_gain is not None:
-        W_eta = W_eta * np.asarray(skirt_gain, dtype=float)[:, None]
+        g = np.asarray(skirt_gain, dtype=float)
+        # NaN marks an uncalibratable band; drop it rather than poison the sum.
+        W_eta = W_eta * np.where(np.isfinite(g), g, 0.0)[:, None]
     return W_eta, cos_th, sin_th
 
 
@@ -434,9 +437,10 @@ def aperture_transfer_function(k, diameter_m, shape="circular"):
 
     independent of wave direction; it first vanishes at kR = 3.832, beyond which
     the aperture has nulled the wave. For a square frame of side L the factor is
-    sinc(kx L/2) sinc(ky L/2) (direction-dependent); the isotropic azimuthal
-    average is returned. Via the dispersion relation k(f) this becomes a
-    frequency-dependent transfer the long-wave inversion can undo.
+    sinc(kx L/2) sinc(ky L/2) (direction-dependent); the RMS azimuthal average
+    sqrt(<H^2>) is returned. Via the dispersion relation k(f) this becomes a
+    frequency-dependent transfer the long-wave inversion can undo. NaN k yields
+    NaN H.
 
     Args:
         k          : scalar or array of wavenumber magnitudes (rad/m)
@@ -452,7 +456,10 @@ def aperture_transfer_function(k, diameter_m, shape="circular"):
     if shape == "circular":
         x = k * (diameter_m / 2.0)
         with np.errstate(invalid="ignore", divide="ignore"):
-            return np.where(x > 1e-9, 2.0 * j1(x) / x, 1.0)
+            # NaN k (e.g. blocked frequencies) passes through as NaN, not 1.0.
+            return np.where(np.isfinite(x),
+                            np.where(x > 1e-9, 2.0 * j1(x) / x, 1.0),
+                            np.nan)
     if shape == "square":
         L = float(diameter_m)
         th = np.linspace(0.0, np.pi / 2, 64)            # quarter-symmetry
@@ -515,10 +522,21 @@ def aperture_crossover_frequency(power_small, power_large, freqs, band=None, smo
     freqs = np.asarray(freqs, dtype=float)
     r = np.asarray(power_small, float) / np.maximum(np.asarray(power_large, float), 1e-30)
     if smooth and smooth > 1:
-        r = np.convolve(r, np.ones(int(smooth)) / int(smooth), mode="same")
+        # Edge-normalized running mean: zero-padded convolve alone biases the
+        # band edges low by the missing samples, steering argmin to the edges.
+        kern = np.ones(int(smooth))
+        good = np.isfinite(r).astype(float)
+        num = np.convolve(np.where(np.isfinite(r), r, 0.0), kern, mode="same")
+        den = np.convolve(good, kern, mode="same")
+        with np.errstate(invalid="ignore"):
+            r = num / np.where(den > 0, den, np.nan)
     sel = (np.ones(freqs.shape, bool) if band is None
            else (freqs >= band[0]) & (freqs <= band[1]))
-    idx = np.flatnonzero(sel)
+    idx = np.flatnonzero(sel & np.isfinite(r))
+    if idx.size == 0:
+        raise ValueError(
+            f"aperture_crossover_frequency: no finite power ratio in band "
+            f"{band} on grid [{freqs.min():.3g}, {freqs.max():.3g}] Hz")
     return float(freqs[idx[int(np.argmin(r[idx]))]])
 
 
@@ -553,7 +571,8 @@ def recolor_to_direct_spectrum(eta_krog, disc_slopes, fs, depth,
                                current_m_s=0.0, highpass_fmin=0.08,
                                highpass_width_oct=0.25, jinc_correct=True,
                                min_transfer=0.3, blend_band=None,
-                               blend_width_oct=0.35):
+                               blend_width_oct=0.35, fmax=None,
+                               window_alpha=0.25):
     """Keep the Krogstad long-wave phase, impose the direct amplitude spectrum.
 
     The Krogstad projection drops off-axis slope variance (~25% low Hs). The
@@ -579,6 +598,13 @@ def recolor_to_direct_spectrum(eta_krog, disc_slopes, fs, depth,
         highpass_fmin, highpass_width_oct : high-pass corner (Hz) and width (oct).
         jinc_correct, min_transfer : enable 1/H; drop bands where |H|<min_transfer.
         blend_band, blend_width_oct : aperture-handoff search window and width.
+        fmax        : amplitude ceiling (Hz). Above it A_direct is zeroed --
+                      the carrier phase is only meaningful inside the CWT band,
+                      so pass the CWT grid maximum. Default None (no ceiling).
+        window_alpha: Tukey alpha applied to the slope series before the rfft,
+                      suppressing leakage skirts that 1/k would amplify at low
+                      f; amplitude is compensated by the window power. 0
+                      disables. Default 0.25.
 
     Returns:
         eta : (T,) real, zero-mean, direct amplitude + Krogstad phase.
@@ -592,12 +618,14 @@ def recolor_to_direct_spectrum(eta_krog, disc_slopes, fs, depth,
     discs = sorted(disc_slopes,                       # largest disc first
                    key=lambda d: (np.inf if d[2] is None else float(d[2])),
                    reverse=True)
+    win = tukey(T, alpha=window_alpha) if window_alpha else np.ones(T)
+    wnorm = np.sqrt(np.mean(win ** 2))
     A_list = []
     for sx_mean, sy_mean, diameter_m in discs:
         sx = np.asarray(sx_mean, dtype=float)
         sy = np.asarray(sy_mean, dtype=float)
-        Sx = np.fft.rfft(sx - sx.mean())
-        Sy = np.fft.rfft(sy - sy.mean())
+        Sx = np.fft.rfft((sx - sx.mean()) * win) / wnorm
+        Sy = np.fft.rfft((sy - sy.mean()) * win) / wnorm
         with np.errstate(divide="ignore", invalid="ignore"):
             A = np.sqrt(np.abs(Sx) ** 2 + np.abs(Sy) ** 2) / k
         if jinc_correct and diameter_m is not None:
@@ -630,6 +658,9 @@ def recolor_to_direct_spectrum(eta_krog, disc_slopes, fs, depth,
         lr = ((np.log2(np.maximum(f, 1e-12)) - np.log2(highpass_fmin))
               / highpass_width_oct)
     A_direct = A_direct * np.clip(1.0 / (1.0 + np.exp(-lr)), 0.0, 1.0)
+    if fmax is not None:
+        # Carrier phase is only defined inside the CWT band.
+        A_direct = np.where(f <= fmax, A_direct, 0.0)
 
     phase = np.angle(np.fft.rfft(eta_krog - eta_krog.mean()))
     eta = np.fft.irfft(A_direct * np.exp(1j * phase), n=T)
@@ -712,7 +743,16 @@ def skirt_correction(freqs, fs, k_disp, T, mother=None,
         r = (np.std(rec[c]) / denom) if denom > 0 else np.nan
         corr[i] = (1.0 / r) if (np.isfinite(r) and r > 1e-6) else np.nan
 
-    corr = _fill_nonfinite_linear(corr)
-    corr = np.clip(corr, 0.2, 5.0)
+    # NaN-and-warn for uncalibratable bands, matching _per_scale_gain: an
+    # interpolated/clamped gain would pass off a pathological band as
+    # recovered. NaN bands are dropped (zeroed) where the gain is applied.
+    corr = np.where((np.abs(corr) >= _GAIN_LO) & (np.abs(corr) <= _GAIN_HI),
+                    corr, np.nan)
+    n_bad = int(np.sum(~np.isfinite(corr)))
+    if n_bad:
+        warnings.warn(
+            f"{n_bad}/{freqs.size} skirt-correction band(s) uncalibratable "
+            f"(non-finite or out-of-range gain); returning NaN there instead "
+            f"of clamping.", UserWarning, stacklevel=2)
     _SKIRT_CACHE[key] = corr
     return corr

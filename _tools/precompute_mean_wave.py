@@ -16,9 +16,9 @@ plus the pre-orthorectification means (sx_mean_raw, sy_mean_raw) for
 comparison. These are written to a small, well-documented NetCDF file
 (a few KB) that IS committed to the repository:
 
-    examples/asit2019_mean_slope_60s.nc
+    _data/asit2019_mean_slope_60s.nc
 
-`examples/_data.py: mean_wave_timeseries()` then loads that file and runs the
+`_data.mean_wave_timeseries()` then loads that file and runs the
 long-wave inversion (CWT -> Krogstad -> dispersion -> inverse CWT) live, so the
 mean-wave elevation eta_long(t) can be demonstrated on the real 60 s record
 WITHOUT anyone needing to download the 10 GB stack.
@@ -32,10 +32,10 @@ tools/ script (not a console entry point, not part of the test path).
 
 USAGE
 -----
-    python tools/precompute_mean_wave.py --input /path/to/asit_2019_raw_pol_stack.nc
+    python _tools/precompute_mean_wave.py --input /path/to/asit_2019_raw_pol_stack.nc
 
     # optional:
-    #   --output examples/asit2019_mean_slope_60s.nc   (default shown)
+    #   --output _data/asit2019_mean_slope_60s.nc   (default shown)
     #   --median /path/to/asit_2019_raw_pol_median.nc   (empirical-gain ref)
     #   --max-frames N                                  (debug: stop early)
 
@@ -217,8 +217,8 @@ def main() -> None:
         ds.summary = (
             "Spatial mean of the orthorectified wave-slope field, per frame, "
             "for the full 60 s ASIT-2019 record. Produced once by "
-            "tools/precompute_mean_wave.py; consumed by "
-            "examples/_data.py:mean_wave_timeseries() to reconstruct the "
+            "_tools/precompute_mean_wave.py; consumed by "
+            "_data.mean_wave_timeseries() to reconstruct the "
             "mean-wave elevation eta_long(t) live without the 10 GB stack.")
         ds.source_file = args.input.name
         ds.source_md5 = _md5_of(args.input)

@@ -1,6 +1,6 @@
 """Shared pytest fixtures: synthetic DoFP frame and example data.
 
-Data-dependent fixtures resolve files through examples/_data.py with
+Data-dependent fixtures resolve files through the _data package with
 downloads DISABLED, so the test suite never hits the network: a file that
 has been fetched/cached locally is used, otherwise the dependent test skips.
 This keeps the suite green offline (e.g. in CI without the data) while still
@@ -16,13 +16,13 @@ import numpy as np
 import pytest
 
 from pss.fresnel import fresnel_dolp
-from pss.stokes import _OFFSETS
+from pss import stokes as _stokes
 
 
 def _data_module():
-    """Import the examples/_data helper module.
+    """Import the _data helper package.
 
-    Uses the same `from examples import _data` form as the test modules, which
+    Uses the same `import _data` form as the test modules, which
     resolves because pytest's `pythonpath = ["."]` (see pyproject.toml) puts
     the project root on sys.path. Falls back to a direct path insert if run
     in some other way.
@@ -123,7 +123,9 @@ def synthetic_frame() -> tuple[np.ndarray, dict]:
         "I90":  90.0,
         "I135": 135.0,
     }
-    for name, (r_off, c_off) in _OFFSETS.items():
+    # Read the layout at call time: apply_layout_from_meta rebinds
+    # stokes._OFFSETS, and an import-time copy would go stale.
+    for name, (r_off, c_off) in _stokes._OFFSETS.items():
         I_full = I_at(angle_to_offset[name], S0_true, DoLP_true, phi_rad)
         frame[r_off::2, c_off::2] = I_full[r_off::2, c_off::2]
     frame += rng.normal(0, 0.5, size=frame.shape)

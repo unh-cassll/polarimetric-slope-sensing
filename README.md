@@ -1,10 +1,10 @@
 # (Extended) Polarimetric Slope Sensing
 
-**An open framework for measuring ocean surface waves with a single polarimetric camera, implemented in Python.** Given a single ocean surface-looking division-of-focal-plane (DoFP) polarimetric camera, these packages will ingest raw frames and spit out calibrated two-component surface-slope fields. From a time series of those fields, the framework will allow you to infer the full surface-elevation field η(x, y, t) across the imager footprint, resolving structure down to gravity-capillary scales.
+**An open framework for measuring ocean surface waves with a single polarimetric camera, implemented in Python.** Given raw frames from a surface-viewing division-of-focal-plane (DoFP) polarimetric camera, these packages produce calibrated two-component surface-slope fields. From a time series of those fields, the framework infers the full surface-elevation field η(x, y, t) across the imager footprint, resolving structure down to gravity-capillary scales.
 
 This is an implementation of the Polarimetric Slope Sensing technique (Zappa _et al._, 2008) and the Extended Polarimetric Slope Sensing (E-PSS) technique (Laxague _et al._, 2026). As the names imply, the Extended method builds on the base one. Strictly speaking, PSS provides a pathway for measuring the two-component surface slope field from a single set of Stokes vector observations. Extended Polarimetric Slope Sensing extends the original technique with two major capabilities:
 
-- in-scene correction for _a priori_ unkonwn ambient/upwelling illumination
+- in-scene correction for _a priori_ unknown ambient/upwelling illumination
 - inference of the long wave (scales greater than the imager FOV) surface elevation from small-amplitude wave theory
 
 In the present implementation, these capabilities are split between two sibling packages, which may be used together or independently:
@@ -24,11 +24,11 @@ Each can also be used standalone.
 
 ## Top-level API — `run_epss`, `run_epss_from_slopes`, `reconstruct_eta_from_record`
 
-Three convenience entry points tie the whole chain together so you don't have to wire `pss` and `eta_field_recon` by hand. `run_epss` and `run_epss_from_slopes` are the in-memory front doors; `reconstruct_eta_from_record` is the on-disk (NetCDF) equivalent.
+Three convenience entry points tie the whole chain together. `run_epss` and `run_epss_from_slopes` operate on in-memory arrays; `reconstruct_eta_from_record` is the on-disk (NetCDF) equivalent.
 
-### `epss.run_epss` — raw DoFP frames in (capability ladder)
+### `epss.run_epss` — raw DoFP frames in
 
-Hand `run_epss` an array of raw DoFP frames and it runs as far up the processing chain as the inputs you provide allow. Each tier is unlocked by adding optional arguments; you never have to ask for a stage explicitly.
+`run_epss` takes an array of raw DoFP frames and runs as far up the processing chain as the supplied inputs allow; each stage is enabled by its optional arguments.
 
 **Tier 0 — slope fields only (bare minimum).** Pass just the frames:
 
@@ -132,9 +132,9 @@ res.eta_xyt, res.eta_long, res.long_wave_ran, res.ortho.dx_m
 
 ### Static orthorectification and the platform-motion caveat
 
-Orthorectification here is the **static-platform** case only: it projects the obliquely-viewed slope field onto a uniform ground grid using fixed geometry (freeboard, θᵢ, focal length, pixel pitch), correcting the oblique-view trapezoid and yielding the one true ground `dx` the η inversion needs. It assumes the camera pose is constant over the record. The moving-platform case (per-frame attitude-driven rectification) needs a per-frame motion source (IMU/INS) and is **not** implemented; see the TODO in `eta_pipeline.py`.
+Orthorectification here is the **static-platform** case only: it projects the obliquely-viewed slope field onto a uniform ground grid using fixed geometry (freeboard, θᵢ, focal length, pixel pitch), correcting the oblique-view trapezoid and yielding the uniform ground `dx` the η inversion requires. It assumes the camera pose is constant over the record. The moving-platform case (per-frame attitude-driven rectification) needs a per-frame motion source (IMU/INS) and is **not** implemented; see the TODO in `eta_pipeline.py`.
 
-Note that `pss` does **not** subtract the per-frame spatial mean of the slopes. The spatial-mean slope is the swell-induced tilt of the whole footprint — i.e. the long-wave signal `eta_long(t)` is reconstructed from — so removing it per frame would destroy the very quantity the long-wave inversion needs (an earlier version did this and silently killed the swell). The genuinely constant part, the camera's fixed viewing tilt, is instead removed once at the **record** level inside `eta_field_recon` (it subtracts the time-mean of the spatial-mean slope before the long-wave inversion). The short-wave path is unaffected either way, since its spatial integration discards the per-frame mean by construction. Orthorectification is therefore purely the geometric pixel resample — it does not re-rotate the slope vectors.
+Note that `pss` does **not** subtract the per-frame spatial mean of the slopes. The spatial-mean slope is the swell-induced tilt of the whole footprint — the long-wave signal `eta_long(t)` is reconstructed from it — so per-frame removal would destroy the quantity the long-wave inversion needs. The genuinely constant part, the camera's fixed viewing tilt, is instead removed once at the **record** level inside `eta_field_recon` (it subtracts the time-mean of the spatial-mean slope before the long-wave inversion). The short-wave path is unaffected either way, since its spatial integration discards the per-frame mean by construction. Orthorectification is therefore purely the geometric pixel resample — it does not re-rotate the slope vectors.
 
 For a record, the expensive part of orthorectification — the Delaunay triangulation of the (~10⁶) input points — depends only on the fixed geometry, so it is built **once** via `build_ortho_plan()` and reused for every frame (`orthorectify_static(..., plan=plan)`). This makes per-frame rectification a cheap barycentric resample rather than a per-frame triangulation rebuild (~100×+ faster over a long record). Likewise the NetCDF reader slices one frame off disk at a time, so processing an N-frame stack never materializes more than a single frame in memory.
 
@@ -171,7 +171,7 @@ Reduction summary (printed to stdout, default native reduction, median-reference
 
 The empirical gain is calibrated against a **temporal average**, not the individual frame. Its `median(DoLP) → DoLP_ideal(θᵢ)` step assumes the reference's median surface tilt equals the mean viewing angle — i.e. a flat surface *on average*. That holds for a temporal median (waves average out to flat) but is false for any single instantaneous frame, so the frame keeps its true DoLP departure from the background instead of being forced onto the Fresnel ideal. If no reference is supplied, **no gain is applied** (the correction is never self-referenced).
 
-By default the reduction is **native** resolution: one Stokes vector per 2×2 super-pixel, returned at half the frame size (e.g. 1028×1232 from a 2056×2464 sensor). This is honest with respect to information content — the output grid equals the measurement grid, with no interpolation implying detail the sensor never resolved. Pass `resolution="full"` to interpolate back to the full frame size with a chosen `method` (see below).
+By default the reduction is **native** resolution: one Stokes vector per 2×2 super-pixel, returned at half the frame size (e.g. 1028×1232 from a 2056×2464 sensor). The output grid then matches the measurement grid, with no interpolation implying detail the sensor did not resolve. Pass `resolution="full"` to interpolate back to the full frame size with a chosen `method` (see below).
 
 The s1 and s2 panels show the gain-corrected normalized Stokes components; the diverging-colormap panels show the orthogonal decomposition of surface tilt into the camera's along-look (toward the wave-coming-from direction in this geometry) and cross-look axes. Individual wave faces, crests, and gravity-capillary structure down to ~1 mm scale are clearly resolved.
 
@@ -255,9 +255,8 @@ polarimetric-slope-sensing/
 │   ├── orthorectify.py                   orthorectify_static() ground-grid projection
 │   ├── wavelet_core.py                   CWT + Fresnel-corrected dispersion
 │   ├── demo_eta_field.py                 synthetic-field validation demo
-│   ├── demo_eta_field.jpg                rendered demo output
-│   ├── README.md                         package-specific quick reference
-│   └── HANDOFF.md                        full method derivation and dev notes
+│   ├── demo_eta_field.png                rendered demo output
+│   └── README.md                         package-specific quick reference
 ├── _examples/
 │   ├── load_and_reduce.py                pss demo (single frame; optional --median)
 │   └── load_and_reduce_with_median_gain.py  E-PSS median-referenced gain demo
@@ -354,14 +353,14 @@ The empirical gain is computed as
 
     g = DoLP_ideal(θᵢ) / median(DoLP_reference)
 
-where `DoLP_ideal(θᵢ)` is the Fresnel prediction for unpolarized sky and no upwelling radiance at the camera's mean angle of incidence. Both normalized Stokes components are scaled by `g`. Field values reported in the E-PSS paper for ASIT2019 are in the range 1.2–1.7; the implementation clips at `[0.5, 3.0]` by default to refuse obviously bogus values.
+where `DoLP_ideal(θᵢ)` is the Fresnel prediction for unpolarized sky and no upwelling radiance at the camera's mean angle of incidence. Both normalized Stokes components are scaled by `g`. Field values reported in the E-PSS paper for ASIT2019 are in the range 1.2–1.7; the implementation clips at `[0.5, 3.0]` by default to reject values outside the physically plausible range.
 
 `median(DoLP_reference)` is **always** taken from a temporal average, never from the frame being corrected. The `median(DoLP) → DoLP_ideal(θᵢ)` step assumes the reference's median surface tilt equals the mean viewing angle (a flat surface on average) — true for a temporal median, false for a single instantaneous frame. So self-referencing is not supported. Supply the reference one of two ways:
 
 - `gain_reference_frame=` to `compute_slope_field` — a per-pixel temporal-median background frame (the canonical E-PSS workflow); or
 - `dolp_obs_median=` (a precomputed reference DoLP scalar) to `apply_gain`, for the single-frame case where a temporal median can't be formed.
 
-If both are given, the reference frame wins. **If neither is supplied, no gain is applied** (the result is downgraded to `gain_mode="none"` with an explanatory note) — the gain is never silently self-referenced.
+If both are given, the reference frame takes precedence. **If neither is supplied, no gain is applied** (the result is downgraded to `gain_mode="none"` with an explanatory note) — the gain is never silently self-referenced.
 
 ## Library use
 
@@ -375,8 +374,8 @@ apply_layout_from_meta(meta)   # honor the file's super-pixel layout
 
 result = compute_slope_field(
     frame,
-    # resolution defaults to "native" (half-res, honest sampling). Pass
-    # resolution="full" to interpolate to the full frame with `method`.
+    # resolution defaults to "native" (half-res, one Stokes vector per
+    # super-pixel). Pass resolution="full" to interpolate with `method`.
     gain_mode=meta.gain_mode,      # "none" / "lab" / "empirical"
     theta_i_mean_deg=meta.theta_i_mean_deg,
     n_water=meta.n_water,
@@ -516,17 +515,17 @@ See [`eta_field_recon/README.md`](eta_field_recon/README.md) for the API referen
 
 ### Long-wave inversion: calibration and robustness
 
-The long-wave path carries guards so its sign and amplitude are trustworthy across configurations, not just the default ones:
+The long-wave path carries guards so its sign and amplitude hold across configurations, not just the defaults:
 
-- **Signed amplitude calibration.** The per-frequency reconstruction gain is fit by signed projection, and the Torrence-Compo `cdelta` constant (which `ewdm` tabulates only for `Morlet(6)`) is sanitized, so the surface reconstructs *upright* for any mother wavelet ω₀. Previously a non-default ω₀ silently inverted `eta(t)` while the spectrum and Hₛ still looked perfect.
+- **Signed amplitude calibration.** The per-frequency reconstruction gain is fit by signed projection, and the Torrence-Compo `cdelta` constant (which `ewdm` tabulates only for `Morlet(6)`) is sanitized, so the surface reconstructs *upright* for any mother wavelet ω₀. Without this, a non-default ω₀ inverts `eta(t)` while leaving the spectrum and Hₛ unchanged.
 - **Cone-of-influence guard.** A frequency band whose wavelet e-folding time exceeds a fraction of the record (or whose calibration gain falls out of range) comes back as `NaN` with a warning and is dropped from the inverse, rather than being silently clamped to a plausible-looking value.
-- **Band-locked direction sign.** Where one slope channel carries the whole wave (a swell along the look axis, ~90°/270°), the per-`(f, t)` propagation sign is set by noise; locking it to the band-dominant direction removes the ~20% Hₛ dip that otherwise appears on those headings while leaving off-axis and crossing seas untouched.
+- **Band-locked direction sign.** Where one slope channel carries the whole wave (a swell along the look axis, ~90°/270°), the per-`(f, t)` propagation sign is set by noise; locking it to the band-dominant direction — chosen per frequency by phase coherence, so opposing systems at different frequencies keep their own directions — removes the ~20% Hₛ dip that otherwise appears on those headings while leaving off-axis seas untouched.
 - **Directional-spreading correction.** The single-direction projection discards off-axis variance, so Hₛ runs low for broad seas. The second directional moment `r2` and a spread-dependent correction factor are reported in `diag` (`directional_spread`, `spread_hs_factor`); applying the factor brings Hₛ to within ~3% of truth across typical spreads, mother-agnostically.
 - **Opposing-current dispersion.** Under a strong opposing current the dispersion relation ω(k) becomes non-monotonic (wave blocking); the solver restricts to the physical branch and returns `NaN` above the blocking frequency instead of interpolating across a non-monotonic curve.
 
 ### Validation against an independent lidar
 
-The long-wave reconstruction has been checked against an independent near-infrared laser altimeter (Riegl LD90-3) over the same ASIT2019 period. Both instruments share an acquisition start of 2019-10-31 16:00:00 UTC: the lidar runs the full 10 min, while the example PSS record is the 60 s excerpt beginning at frame 7001 — i.e. ~233 s into the acquisition at 30 fps. `_tools/validate_eta_long_vs_lidar.py` reconstructs `eta_long(t)` from the committed slope series and cross-correlates it against the lidar (band-limited to 0.05–0.5 Hz) **anchored at that ~233 s offset**. The lidar spot and the PSS footprint are ~20 m apart, so the same swell reaches them a few seconds apart; at the deep-water celerity near the 0.17 Hz peak (`c = g/2πf ≈ 8.8 m/s`) that is a ~2 s lag, and the measured propagation lag is **~2.3 s**, consistent with the geometry. Over the 60 s window the waveform correlation is **r ≈ 0.68** (band-passed std 35 cm vs 45 cm), and the elevation spectra overlap through the energetic wave band (matched peak near 0.17 Hz). This is the first **sign-sensitive** check on the reconstruction — spectra and Hₘ₀ are blind to a global sign flip — and it confirms `eta_long` is up-positive.
+The long-wave reconstruction has been checked against an independent near-infrared laser altimeter (Riegl LD90-3) over the same ASIT2019 period. Both instruments share an acquisition start of 2019-10-31 16:00:00 UTC: the lidar runs the full 10 min, while the example PSS record is the 60 s excerpt beginning at frame 7001 — i.e. ~233 s into the acquisition at 30 fps. `_tools/validate_eta_long_vs_lidar.py` reconstructs `eta_long(t)` from the committed slope series and cross-correlates it against the lidar (band-limited to 0.05–0.5 Hz), anchored at that ~233 s offset. The lidar spot and the PSS footprint are ~20 m apart, so the same swell reaches them a few seconds apart; at the deep-water celerity near the 0.17 Hz peak (`c = g/2πf ≈ 8.8 m/s`) that is a ~2 s lag, and the measured propagation lag is ~2.4 s, consistent with the geometry. Over the 60 s window the waveform correlation is r ≈ 0.75 (band-passed std 36 cm vs 45 cm), and the elevation spectra overlap through the energetic wave band (matched peak near 0.17 Hz). This comparison is sign-sensitive — spectra and Hₘ₀ are blind to a global sign flip — and confirms `eta_long` is up-positive.
 
 A practical note on the wavelet formulation: because the inversion is a CWT band-limited to roughly [0.05, 2] Hz, the `1/k` dispersion division is never evaluated in the `f → 0` (`k → 0`) regime where it would amplify low-frequency slope noise into spurious elevation. The band floor does implicitly what a direct spectral `1/k` inversion needs explicit low-frequency conditioning to achieve — the inferred elevation spectrum shows no low-frequency blow-up relative to the lidar.
 
@@ -548,9 +547,9 @@ The Python version reproduces all of that and generalizes step 4 into the config
 
 ## Implementation notes
 
-- **Output resolution (`resolution=`).** The default is `"native"`: the four orientation samples in each 2×2 super-pixel are combined directly into one Stokes vector, so the result is half the frame size (H/2 × W/2) with no interpolation. This is honest about information content — there is genuinely one polarization measurement per super-pixel, and the output grid says so. The effective pixel pitch is then **twice** the sensor pitch, which matters for any wavelength/spectrum computation (pass the doubled `dx`). Passing `resolution="full"` interpolates each orientation back to the full (H, W) grid using `method`; this implies 2× the real linear resolution but partially corrects the IFOV half-pixel offset between orientations.
+- **Output resolution (`resolution=`).** The default is `"native"`: the four orientation samples in each 2×2 super-pixel are combined directly into one Stokes vector, so the result is half the frame size (H/2 × W/2) with no interpolation. There is one polarization measurement per super-pixel, and the output grid reflects that. The effective pixel pitch is then **twice** the sensor pitch, which matters for any wavelength/spectrum computation (pass the doubled `dx`). Passing `resolution="full"` interpolates each orientation back to the full (H, W) grid using `method`; this implies 2× the real linear resolution but partially corrects the IFOV half-pixel offset between orientations.
 
-- **Bilinear interpolation method** uses `scipy.ndimage.map_coordinates(order=1)` so the half-pixel offset between each orientation's sample grid and the full frame is handled correctly.
+- **Bilinear interpolation method** uses `scipy.ndimage.map_coordinates(order=1)` and inverts each orientation's own (row, column) sample positions within the 2×2 super-pixel, registering the four channels onto the common full-frame grid.
 
 - **Conv-demodulation method (`conv_demodulation`) is the package default** and implements the exact **Ratliff, LaCasse & Tyo (2009) Method 4** — the 16-pixel interpolator from Fig. 3 of that paper (radius 3√2/2, four pixels per orientation, distance weights A = 0.3541, B = 0.2639, C = 0.1180). The four 4×4 kernels are convolved with the frame and combined per Eq. (12); the per-parity kernel→orientation mapping is derived from the configured super-pixel layout (`_OFFSETS`) rather than hard-coded, so it tracks the layout. It takes no kernel-size argument. (`kernel_averaging` still accepts `"2x2"`/`"4x4"`.)
 
