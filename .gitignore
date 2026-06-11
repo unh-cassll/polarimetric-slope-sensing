@@ -6,17 +6,17 @@
 # .nc in _data/ ...
 _data/*.nc
 
-# ... EXCEPT the small committed derived artifact: the spatial-mean slope
+# ... EXCEPT the small committed derived data file: the spatial-mean slope
 # time series for the full 60 s record, produced once by
 # _tools/precompute_mean_wave.py and consumed by
 # _data/__init__.py:mean_wave_timeseries() to reconstruct eta_long(t) offline.
 !_data/asit2019_mean_slope_60s.nc
 
-# ... and the committed independent-validation artifact: the Riegl LD90-3
+# ... and the committed independent-validation file: the Riegl LD90-3
 # water-surface elevation series (built by _tools/make_lidar_elevation_nc.py).
 !_data/asit2019_lidar_elevation_10min.nc
 
-# Python build / cache artifacts
+# Python build / cache files
 __pycache__/
 *.pyc
 *.egg-info/
@@ -25,8 +25,13 @@ build/
 dist/
 *.part
 
-# Virtual environments
-.venv/
+# Ignore the contents of _dustbin/
+_dustbin/*
+
+# Ignore robot bits
+.venv
+.vscode
+.claude
 
 # Jupyter editor caches
 .virtual_documents/

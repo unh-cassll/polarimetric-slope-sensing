@@ -35,7 +35,10 @@ ideas for extensions.
 """
 
 from .recon import reconstruct_eta_field
-from .wavelet_core import lindisp_with_current
+from .wavelet_core import (lindisp_with_current, aperture_transfer_function,
+                           aperture_transfer_gain, directional_spread,
+                           spread_hs_factor, aperture_crossover_frequency,
+                           blend_aperture_coeffs, recolor_to_direct_spectrum)
 from .orthorectify import orthorectify_static, OrthoResult, OrthoPlan, build_ortho_plan
 from .eta_pipeline import PipelineResult, reconstruct_eta_from_record
 
@@ -48,4 +51,11 @@ __all__ = [
     "OrthoResult",
     "OrthoPlan",
     "lindisp_with_current",
+    "aperture_transfer_function",
+    "aperture_transfer_gain",
+    "directional_spread",
+    "spread_hs_factor",
+    "aperture_crossover_frequency",
+    "blend_aperture_coeffs",
+    "recolor_to_direct_spectrum",
 ]

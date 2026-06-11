@@ -51,7 +51,10 @@ from scipy.signal.windows import tukey, hann
 from ewdm.wavelets import Morlet
 
 from .wavelet_core import (_cwt, _inverse_cwt, lindisp_with_current,
-                           krogstad_eta_coeffs, skirt_correction)
+                           krogstad_eta_coeffs, skirt_correction,
+                           directional_spread, spread_hs_factor,
+                           aperture_transfer_gain, blend_aperture_coeffs,
+                           recolor_to_direct_spectrum)
 
 
 def _make_2d_window(Ny, Nx, alpha):
@@ -123,6 +126,9 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            mother=None,
                            inverse_per_scale=False,
                            skirt_correct=False,
+                           aperture_transfer_correct=False,
+                           recolor_direct=False,
+                           recolor_fmin=0.08,
                            # spatial windowing
                            spatial_alpha=0.1,
                            spatial_pad_frac=0.10,
@@ -132,6 +138,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            long_wave=True,
                            short_wave=True,
                            aperture_diameter_m=None,
+                           aperture_diameters_m=None,
                            verbose=True):
     """
     Reconstruct eta(x, y, t) from a stack of slope images.
@@ -155,6 +162,23 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         unit monochromatic surface component reconstructs at
                         unit amplitude.  Paired with inverse_per_scale.
                         Default False (unchanged).
+        aperture_transfer_correct : if True, divide the long-wave elevation by
+                        the aperture transfer function (see
+                        wavelet_core.aperture_transfer_gain) to undo the spatial
+                        low-pass of averaging slope over the footprint. Uses a
+                        circular-disc transfer of diameter aperture_diameter_m,
+                        or a square transfer of the full downsampled frame side
+                        when aperture_diameter_m is None. Bands at/beyond the
+                        aperture null are dropped (their energy is unrecoverable).
+                        Default False (unchanged).
+        recolor_direct : if True, replace eta_long's amplitude spectrum with the
+                        directionally-complete direct estimate while keeping the
+                        Krogstad phase (see wavelet_core.recolor_to_direct_spectrum),
+                        closing the ~25% projection-loss shortfall. Uses the
+                        disc-mean slopes (jinc-corrected and aperture-blended when
+                        aperture_diameters_m is set) high-passed above recolor_fmin.
+                        Default False (unchanged).
+        recolor_fmin  : high-pass corner (Hz) for the recolor. Default 0.08.
 
         spatial_alpha    : Tukey alpha for the 2-D slope window.
                            Default 0.1 (light taper).
@@ -195,6 +219,17 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         is trustworthy (e.g. vignetting or grazing-edge
                         artifacts near the frame boundary). Only affects the
                         long-wave (eta_long) path; eta_short is unchanged.
+        aperture_diameters_m : optional list of disc diameters (m) for a
+                        multi-aperture long wave. Each disc-mean slope is
+                        inverted separately and the elevation CWT coefficients
+                        are frequency-blended largest-disc-first (see
+                        wavelet_core.blend_aperture_coeffs): the clean large disc
+                        carries low frequencies, the less-aperture-suppressed
+                        small disc the intermediate band, handed off at the
+                        maximum-overlap frequency. Supersedes aperture_diameter_m
+                        / aperture_transfer_correct for the long-wave path; the
+                        per-disc handoffs land in diag["aperture_crossovers"].
+                        Default None (single disc).
 
         verbose       : print progress messages.
 
@@ -291,35 +326,80 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
     if long_wave:
         if verbose:
             print(f"    computing eta_long(t) from spatial-mean slopes ...")
-        sx_mean = _aperture_spatial_mean(sx_ds, aperture_mask)
-        sy_mean = _aperture_spatial_mean(sy_ds, aperture_mask)
-
-        # Detrend so the temporal window doesn't multiply a constant DC offset
-        sx_mean = sx_mean - sx_mean.mean()
-        sy_mean = sy_mean - sy_mean.mean()
-
-        sx_mean_w = sx_mean * temporal_W
-        sy_mean_w = sy_mean * temporal_W
-
-        Wsx = _cwt(sx_mean_w, freqs_cwt, fs, mother).values
-        Wsy = _cwt(sy_mean_w, freqs_cwt, fs, mother).values
-
         _, k_disp = lindisp_with_current(2*np.pi*freqs_cwt, water_depth_m, 0.0)
-
-        # Krogstad signed projection of the slope CWT coefficients onto the
-        # elevation coefficients, via the dispersion-relation wavenumber.
-        # See eta_field_recon.wavelet_core.krogstad_eta_coeffs for the full
-        # derivation and the sign-guard rationale.
         skirt_gain = None
         if skirt_correct:
             skirt_gain = skirt_correction(
                 freqs_cwt, fs, k_disp, T, mother,
                 per_scale=inverse_per_scale, temporal_alpha=temporal_alpha)
-        W_eta, cos_th, sin_th = krogstad_eta_coeffs(
-            Wsx, Wsy, k_disp, skirt_gain=skirt_gain)
+
+        def _disc_W_eta(mask):
+            """Disc-mean slope -> Krogstad elevation CWT coefficients."""
+            sxm = _aperture_spatial_mean(sx_ds, mask)
+            sym = _aperture_spatial_mean(sy_ds, mask)
+            sxm = sxm - sxm.mean()
+            sym = sym - sym.mean()
+            Wx = _cwt(sxm * temporal_W, freqs_cwt, fs, mother).values
+            Wy = _cwt(sym * temporal_W, freqs_cwt, fs, mother).values
+            We, ct, st = krogstad_eta_coeffs(Wx, Wy, k_disp, skirt_gain=skirt_gain)
+            return We, ct, st, Wx, Wy, sxm, sym
+
+        aperture_gain = None
+        crossovers = None
+        recolor_discs = None              # (sxm, sym, diameter_m) per aperture
+        if aperture_diameters_m is not None:
+            # Multi-aperture long wave: invert the disc-mean slope at each
+            # diameter, then frequency-blend largest-disc-first so the clean
+            # large disc carries low f and the less-suppressed small disc carries
+            # the intermediate band (handoff at the maximum-overlap frequency).
+            diams = sorted((float(d) for d in aperture_diameters_m), reverse=True)
+            if verbose:
+                print(f"    multi-aperture long wave: discs {diams} m (blended)")
+            W_list, prim, recolor_discs = [], None, []
+            for d in diams:
+                m = _circular_aperture_mask(Ny_d, Nx_d, dx_ds, d)
+                We, ct, st, Wx, Wy, sxm, sym = _disc_W_eta(m)
+                W_list.append(We)
+                recolor_discs.append((sxm, sym, d))
+                if prim is None:                 # largest disc = diag reference
+                    prim = (ct, st, Wx, Wy, sxm, sym)
+            W_eta, crossovers = blend_aperture_coeffs(W_list, freqs_cwt)
+            cos_th, sin_th, Wsx, Wsy, sx_mean, sy_mean = prim
+        else:
+            W_eta, cos_th, sin_th, Wsx, Wsy, sx_mean, sy_mean = _disc_W_eta(aperture_mask)
+            recolor_discs = [(sx_mean, sy_mean, aperture_diameter_m)]
+            # Undo the aperture spatial low-pass (averaging slope over the
+            # footprint suppresses each wave by its transfer H(k(f))). Bands
+            # at/beyond the aperture null come back NaN and are dropped here.
+            if aperture_transfer_correct:
+                if aperture_diameter_m is not None:
+                    aperture_gain = aperture_transfer_gain(
+                        freqs_cwt, k_disp, aperture_diameter_m, shape="circular")
+                else:
+                    aperture_gain = aperture_transfer_gain(
+                        freqs_cwt, k_disp, Nx_d * dx_ds, shape="square")
+                W_eta = W_eta * aperture_gain[:, None]
+                W_eta = np.where(np.isfinite(W_eta), W_eta, 0.0)
+
+        sx_mean_w = sx_mean * temporal_W
+        sy_mean_w = sy_mean * temporal_W
 
         eta_long = _inverse_cwt(W_eta, freqs_cwt, fs, mother,
                                 per_scale=inverse_per_scale)
+
+        # Recolor: keep the Krogstad phase, impose the directionally-complete
+        # direct amplitude (closes the ~25% projection-loss shortfall).
+        eta_long_krog = None
+        if recolor_direct:
+            eta_long_krog = eta_long
+            eta_long = recolor_to_direct_spectrum(
+                eta_long, recolor_discs, fs, water_depth_m,
+                highpass_fmin=recolor_fmin)
+
+        # Directional spread (reported, not auto-applied): r2 second moment and
+        # the Hs correction factor for the projection's off-axis variance loss.
+        spread = directional_spread(Wsx, Wsy)
+        hs_spread_factor = spread_hs_factor(spread["r2"])
     else:
         if verbose:
             print(f"    long_wave=False: skipping eta_long(t) inversion "
@@ -333,6 +413,11 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         sy_mean = sy_mean - sy_mean.mean()
         sx_mean_w = sy_mean_w = None
         Wsx = Wsy = W_eta = cos_th = sin_th = k_disp = None
+        spread = None
+        hs_spread_factor = None
+        aperture_gain = None
+        crossovers = None
+        eta_long_krog = None
         eta_long = np.zeros(T, dtype=float)
 
     # ------------------------------------------------------------------
@@ -351,6 +436,9 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         sx_mean_w=sx_mean_w, sy_mean_w=sy_mean_w,
         Wsx=Wsx, Wsy=Wsy, W_eta=W_eta,
         cos_th=cos_th, sin_th=sin_th, k_disp=k_disp,
+        directional_spread=spread, hs_spread_factor=hs_spread_factor,
+        aperture_gain=aperture_gain, aperture_crossovers=crossovers,
+        recolor_direct=recolor_direct, eta_long_krog=eta_long_krog,
         x_ds=x_ds, y_ds=y_ds, dx_ds=dx_ds,
         spatial_W=spatial_W, spatial_W_padded=spatial_W_padded,
         temporal_W=temporal_W,

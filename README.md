@@ -1,4 +1,4 @@
-# pss + eta_field_recon — Polarimetric Slope Sensing and η(x, y, t) Reconstruction
+# (Extended) Polarimetric Slope Sensing
 
 **An open framework for measuring ocean surface waves with a single polarimetric camera, implemented in Python.** Given a single ocean surface-looking division-of-focal-plane (DoFP) polarimetric camera, these packages will ingest raw frames and spit out calibrated two-component surface-slope fields. From a time series of those fields, the framework will allow you to infer the full surface-elevation field η(x, y, t) across the imager footprint, resolving structure down to gravity-capillary scales.
 
@@ -500,7 +500,7 @@ Returns:
 - `eta_long` — `(T,)` long-wave (spatial-mean) time series (m)
 - `eta_short` — `(T, Ny_d, Nx_d)` zero-mean-per-frame short-wave field (m)
 - `conf` — `(T, Ny_d, Nx_d)` confidence mask on `[0, 1]`
-- `diag` — dict of intermediates (CWT coefficients, windows, etc.)
+- `diag` — dict of intermediates (CWT coefficients, windows, the directional-spread moment `r2`, the `hs_spread_factor` Hₛ correction, etc.)
 
 ### Method, briefly
 
@@ -513,6 +513,16 @@ Two paths, summed:
 The two paths are orthogonal — short has zero spatial mean, long has no spatial structure inside the frame — and sum cleanly. For a frame of size L, the crossover frequency where wavelength = L is `f_crossover = √(g / 2πL) ≈ 0.7 Hz at L = 3 m`. Above that, the short path dominates; below it, the long path dominates.
 
 See [`eta_field_recon/README.md`](eta_field_recon/README.md) for the API reference and the full method derivation. The implementation is deliberately modular, so natural extension points (anti-aliasing, an MEM/MLM directional estimator, current correction, streaming for long records) are easy to slot in.
+
+### Long-wave inversion: calibration and robustness
+
+The long-wave path carries guards so its sign and amplitude are trustworthy across configurations, not just the default ones:
+
+- **Signed amplitude calibration.** The per-frequency reconstruction gain is fit by signed projection, and the Torrence-Compo `cdelta` constant (which `ewdm` tabulates only for `Morlet(6)`) is sanitized, so the surface reconstructs *upright* for any mother wavelet ω₀. Previously a non-default ω₀ silently inverted `eta(t)` while the spectrum and Hₛ still looked perfect.
+- **Cone-of-influence guard.** A frequency band whose wavelet e-folding time exceeds a fraction of the record (or whose calibration gain falls out of range) comes back as `NaN` with a warning and is dropped from the inverse, rather than being silently clamped to a plausible-looking value.
+- **Band-locked direction sign.** Where one slope channel carries the whole wave (a swell along the look axis, ~90°/270°), the per-`(f, t)` propagation sign is set by noise; locking it to the band-dominant direction removes the ~20% Hₛ dip that otherwise appears on those headings while leaving off-axis and crossing seas untouched.
+- **Directional-spreading correction.** The single-direction projection discards off-axis variance, so Hₛ runs low for broad seas. The second directional moment `r2` and a spread-dependent correction factor are reported in `diag` (`directional_spread`, `spread_hs_factor`); applying the factor brings Hₛ to within ~3% of truth across typical spreads, mother-agnostically.
+- **Opposing-current dispersion.** Under a strong opposing current the dispersion relation ω(k) becomes non-monotonic (wave blocking); the solver restricts to the physical branch and returns `NaN` above the blocking frequency instead of interpolating across a non-monotonic curve.
 
 ### Validation against an independent lidar
 
