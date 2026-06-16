@@ -42,6 +42,9 @@ from typing import Any
 import numpy as np
 
 from pss import build_lookup_table, compute_slope_field
+from pss.stokes import by_superpixel, compute_stokes
+from pss.skyaware import (skyaware_slope_stack, solar_position,
+                          scene_azimuth_deg, require_seapol)
 
 from eta_field_recon.orthorectify import orthorectify_static
 from eta_field_recon.recon import reconstruct_eta_field, long_wave_gate
@@ -86,6 +89,9 @@ class EpssResult:
     eta_ran: bool = False        # whether the eta stage ran
     long_wave_ran: bool = False  # whether the long-wave inversion ran
     dx_m: float | None = None    # ground dx used (from orthorectification)
+    inversion: str = "fresnel"   # "fresnel" or "skyaware"
+    skyaware_env: Any = None     # SkyAwareEnv used (skyaware path only)
+    anchor: Any = None           # AnchorResult (skyaware path only)
     gain_mode: str | None = None # resolved gain mode actually used
     gain_auto_median: bool = False  # True if the >=min_gain_seconds auto
                                     # temporal-median reference was used
@@ -138,6 +144,18 @@ def run_epss(
     lab_gain: tuple[float, float] = (1.2185, 1.2197),
     gain_reference_frame=None,
     min_gain_seconds: float = DEFAULT_MIN_GAIN_SECONDS,
+    # single-camera sky-aware inversion (mainline option; needs the optional
+    # seapol package). inversion="skyaware" replaces the Fresnel DoLP->AoI
+    # reduction with seapol's forward-model inversion + the empirical slope
+    # anchor; gain_mode then selects the anchor amplitude (none/lab/empirical).
+    inversion: str = "fresnel",
+    acquisition_time_utc=None,
+    site_lat: float | None = None,
+    site_lon: float | None = None,
+    camera_azimuth_compass_deg: float | None = None,
+    skyaware_env=None,
+    water_case: int = 2,
+    theta_v_deg: float | None = None,
     keep_slope_results: bool = False,
     verbose: bool = True,
 ) -> EpssResult:
@@ -256,6 +274,20 @@ def run_epss(
         )
     eta_ran = eta_ready
 
+    inversion = str(inversion).lower()
+    if inversion not in ("fresnel", "skyaware"):
+        raise ValueError(
+            f"inversion must be 'fresnel' or 'skyaware'; got {inversion!r}")
+    if inversion == "skyaware":
+        # Fail fast (and clearly) if the optional seapol dep is missing.
+        require_seapol()
+        # In sky-aware mode, gain_mode selects the slope-ANCHOR amplitude
+        # target (none/lab/empirical), not a DoFP DoLP gain. Default to the
+        # in-scene empirical anchor (the mainline single-camera recipe). This
+        # also keeps the Fresnel gain-decision block below inert (gain_mode is
+        # no longer None), so its auto-median logic does not run.
+        gain_mode = gain_mode or "empirical"
+
     # ------------------------------------------------------------------
     # Gain-mode decision (empirical DoLP gain).
     #
@@ -314,9 +346,14 @@ def run_epss(
     if verbose:
         print("run_epss:")
         print(f"  frames     : {T} frame(s) of {frames.shape[1]}x{frames.shape[2]}")
-        print(f"  pss reduce : resolution={resolution!r}, method={method!r}, "
-              f"gain_mode={gain_mode!r}{gain_note} "
-              f"(assumed L0 layout, n_water={n_water})")
+        if inversion == "skyaware":
+            print(f"  inversion  : skyaware (seapol forward model), "
+                  f"anchor_mode={gain_mode!r} (resolution={resolution!r}, "
+                  f"n_water={n_water})")
+        else:
+            print(f"  pss reduce : resolution={resolution!r}, method={method!r}, "
+                  f"gain_mode={gain_mode!r}{gain_note} "
+                  f"(assumed L0 layout, n_water={n_water})")
         if eta_ran:
             print(f"  eta stage  : ENABLED (fs={fs} Hz, theta_i={theta_i_mean_deg} "
                   f"deg, freeboard={freeboard_m} m, pitch={pixel_pitch_m*1e6:.3f} um, "
@@ -326,57 +363,105 @@ def run_epss(
                   f"-> returning slope fields only")
 
     # ------------------------------------------------------------------
-    # pss reduction, frame by frame.
+    # Reduction: raw frames -> per-frame slope stack. The Fresnel lookup (a
+    # 200k-point PCHIP fit) is a per-record invariant, hoisted here.
     # ------------------------------------------------------------------
-    if verbose:
-        print(f"  reducing {T} frame(s) with pss ...")
-
-    # Per-record invariants, hoisted out of the frame loop: the Fresnel
-    # lookup (a 200k-point PCHIP fit) and the empirical-gain reference DoLP
-    # (a full Stokes reduction of the reference frame).
     lut = build_lookup_table(n_water=n_water)
-    dolp_ref = None
-    if gain_reference_frame is not None and gain_mode == "empirical":
-        ref_res = compute_slope_field(
-            np.asarray(gain_reference_frame), resolution=resolution,
-            method=method, gain_mode="none", n_water=n_water,
-            lookup_table=lut)
-        dolp_ref = float(np.nanmedian(
-            np.sqrt(ref_res.s1 ** 2 + ref_res.s2 ** 2)))
+    skyaware_env_used = None
+    anchor_used = None
 
-    def _reduce(frame, use_ref_frame=False):
-        return compute_slope_field(
-            frame,
-            resolution=resolution,
-            method=method,
-            gain_mode=gain_mode,
-            lab_gain=lab_gain,
-            theta_i_mean_deg=theta_i_mean_deg,   # may be None when eta stage is off
-            n_water=n_water,
-            lookup_table=lut,
-            # Frame 0 reduces against the reference frame itself (canonical
-            # notes/bookkeeping); the rest reuse the precomputed scalar.
-            gain_reference_frame=gain_reference_frame if use_ref_frame else None,
-            dolp_obs_median=None if use_ref_frame else dolp_ref,
-        )
+    if inversion == "skyaware":
+        # Sky-aware single-camera path: extract Stokes for the whole stack,
+        # invert each frame through seapol's forward model, then apply the
+        # stack-level empirical slope anchor (it needs the FOV-mean tilt
+        # variance across the record, so it cannot be a per-frame step).
+        if verbose:
+            print(f"  reducing {T} frame(s) via seapol sky-aware inversion ...")
 
-    res0 = _reduce(frames[0], use_ref_frame=True)
-    Ny, Nx = res0.Sx.shape
-    slope_x = np.empty((T, Ny, Nx), dtype=float)
-    slope_y = np.empty((T, Ny, Nx), dtype=float)
-    slope_x[0], slope_y[0] = res0.Sx, res0.Sy
-    slope_results = [res0] if keep_slope_results else []
-    for ti in range(1, T):
-        r = _reduce(frames[ti])
-        slope_x[ti], slope_y[ti] = r.Sx, r.Sy
-        if keep_slope_results:
-            slope_results.append(r)
+        def _stokes(fr):
+            return (by_superpixel(fr) if resolution == "native"
+                    else compute_stokes(fr, method=method))
+
+        stok = [_stokes(f) for f in frames]
+        S0 = np.stack([a[0] for a in stok])
+        s1 = np.stack([a[1] for a in stok])
+        s2 = np.stack([a[2] for a in stok])
+        del stok
+
+        tv = theta_v_deg if theta_v_deg is not None else theta_i_mean_deg
+        if tv is None:
+            raise ValueError(
+                "inversion='skyaware' needs theta_v_deg (or theta_i_mean_deg): "
+                "the camera incidence angle.")
+        zen = saz = None
+        if skyaware_env is None:
+            miss = [n for n, v in
+                    (("acquisition_time_utc", acquisition_time_utc),
+                     ("site_lat", site_lat), ("site_lon", site_lon),
+                     ("camera_azimuth_compass_deg", camera_azimuth_compass_deg))
+                    if v is None]
+            if miss:
+                raise ValueError(
+                    "inversion='skyaware' without a precomputed skyaware_env "
+                    f"needs the acquisition sun geometry; missing {miss}. (Or "
+                    "pass skyaware_env=SkyAwareEnv(...) directly.)")
+            zen, azc = solar_position(acquisition_time_utc, site_lat, site_lon)
+            saz = scene_azimuth_deg(camera_azimuth_compass_deg, azc)
+
+        slope_x, slope_y, skyaware_env_used, anchor_used = skyaware_slope_stack(
+            S0, s1, s2, theta_v_deg=tv, n_water=n_water, env=skyaware_env,
+            sun_zenith_deg=zen, sun_azimuth_scene_deg=saz, water_case=water_case,
+            gain_mode=gain_mode, lab_gain=lab_gain,
+            theta_i_mean_deg=theta_i_mean_deg, lookup_table=lut, verbose=verbose)
+        slope_results = []
+        if verbose:
+            print(f"  anchor     : f={anchor_used.f:.3f} (mode={anchor_used.mode})")
+    else:
+        # Fresnel DoLP->AoI reduction (the default), frame by frame.
+        if verbose:
+            print(f"  reducing {T} frame(s) with pss ...")
+        dolp_ref = None
+        if gain_reference_frame is not None and gain_mode == "empirical":
+            ref_res = compute_slope_field(
+                np.asarray(gain_reference_frame), resolution=resolution,
+                method=method, gain_mode="none", n_water=n_water,
+                lookup_table=lut)
+            dolp_ref = float(np.nanmedian(
+                np.sqrt(ref_res.s1 ** 2 + ref_res.s2 ** 2)))
+
+        def _reduce(frame, use_ref_frame=False):
+            return compute_slope_field(
+                frame,
+                resolution=resolution,
+                method=method,
+                gain_mode=gain_mode,
+                lab_gain=lab_gain,
+                theta_i_mean_deg=theta_i_mean_deg,   # may be None (eta off)
+                n_water=n_water,
+                lookup_table=lut,
+                gain_reference_frame=gain_reference_frame if use_ref_frame else None,
+                dolp_obs_median=None if use_ref_frame else dolp_ref,
+            )
+
+        res0 = _reduce(frames[0], use_ref_frame=True)
+        Ny, Nx = res0.Sx.shape
+        slope_x = np.empty((T, Ny, Nx), dtype=float)
+        slope_y = np.empty((T, Ny, Nx), dtype=float)
+        slope_x[0], slope_y[0] = res0.Sx, res0.Sy
+        slope_results = [res0] if keep_slope_results else []
+        for ti in range(1, T):
+            r = _reduce(frames[ti])
+            slope_x[ti], slope_y[ti] = r.Sx, r.Sy
+            if keep_slope_results:
+                slope_results.append(r)
 
     # Eta stage off: return slope fields only.
     if not eta_ran:
         return EpssResult(
             slope_x=slope_x, slope_y=slope_y, slope_results=slope_results,
             eta_ran=False, long_wave_ran=False,
+            inversion=inversion, skyaware_env=skyaware_env_used,
+            anchor=anchor_used,
             gain_mode=gain_mode, gain_auto_median=auto_median_used,
             notes="slope fields only; acquisition parameters not supplied.",
         )
@@ -434,6 +519,7 @@ def run_epss(
         eta_xyt=eta_xyt, eta_long=eta_long, eta_short=eta_short,
         confidence=confidence, diag=diag, ortho=ortho,
         eta_ran=True, long_wave_ran=long_wave, dx_m=dx_m,
+        inversion=inversion, skyaware_env=skyaware_env_used, anchor=anchor_used,
         gain_mode=gain_mode, gain_auto_median=auto_median_used,
         notes=(f"eta reconstructed; long-wave "
                f"{'ran' if long_wave else 'skipped (record too short)'}."),

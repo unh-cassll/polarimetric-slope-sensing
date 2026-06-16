@@ -34,6 +34,25 @@ from .stokes import (
     by_kernel_averaging,
     compute_stokes,
 )
+from .anchor import (
+    AnchorResult,
+    slope_anchor_gain,
+    present_slope_from_stokes,
+    fov_mean_tilt_series,
+)
+# Sky-aware path: optional seapol dependency. The module's seapol imports are
+# guarded, so this import never fails when seapol is absent; only constructing
+# an inverter / calling require_seapol() raises.
+from .skyaware import (
+    SkyAwareInverter,
+    SkyAwareEnv,
+    require_seapol,
+    solar_position,
+    scene_azimuth_deg,
+    build_skyaware_inverter,
+    resolve_environment,
+    skyaware_slope_stack,
+)
 
 __all__ = [
     "apply_gain", "GainResult", "DEFAULT_LAB_GAIN",
@@ -43,4 +62,11 @@ __all__ = [
     "compute_stokes", "METHODS",
     "by_bilinear_interpolation", "by_kernel_averaging", "by_conv_demodulation",
     "by_superpixel",
+    # empirical slope anchor
+    "AnchorResult", "slope_anchor_gain", "present_slope_from_stokes",
+    "fov_mean_tilt_series",
+    # sky-aware inversion (optional seapol)
+    "SkyAwareInverter", "SkyAwareEnv", "require_seapol", "solar_position",
+    "scene_azimuth_deg", "build_skyaware_inverter", "resolve_environment",
+    "skyaware_slope_stack",
 ]

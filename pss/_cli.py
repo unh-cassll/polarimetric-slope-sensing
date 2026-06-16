@@ -55,6 +55,10 @@ def load_and_reduce_median_gain_main(argv: list[str] | None = None) -> int:
     return _import_main_from("_examples/load_and_reduce_with_median_gain.py")(argv)
 
 
+def skyaware_demo_main(argv: list[str] | None = None) -> int:
+    return _import_main_from("_examples/skyaware_demo.py")(argv)
+
+
 def eta_demo_main(argv: list[str] | None = None) -> int:
     """Run the eta-reconstruction demo via runpy (the script uses
     `if __name__ == '__main__'` rather than a main() function). Always

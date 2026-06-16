@@ -60,9 +60,24 @@ notebook = [
     "jupyter>=1.0",
     "nbformat>=5.0",
 ]
+# Single-camera sky-aware inversion (inversion="skyaware"). Requires the seapol
+# forward-model package (surface-wave-light-reflection). If seapol is not on a
+# package index, install it from source/VCS; the runtime import guard in
+# pss.skyaware enforces availability with an actionable error.
+skyaware = [
+    "seapol>=0.2",
+]
+# GPU acceleration of the sky-aware 3-D kNN inversion (knn_backend="auto"
+# selects it automatically when present). Device-agnostic torch: install the
+# CUDA wheel (NVIDIA) or the ROCm wheel (AMD) matching your hardware -- the
+# default index pulls the CUDA build. Implies the skyaware (seapol) stack.
+gpu = [
+    "torch>=2.2",
+    "seapol>=0.2",
+]
 # Everything
 all = [
-    "epss[test,notebook]",
+    "epss[test,notebook,skyaware,gpu]",
 ]
 
 [project.urls]
@@ -74,6 +89,7 @@ Homepage      = "https://github.com/unh-cassll/polarimetric-slope-sensing"
 pss-load-reduce        = "pss._cli:load_and_reduce_main"
 pss-load-reduce-median = "pss._cli:load_and_reduce_median_gain_main"
 pss-eta-demo           = "pss._cli:eta_demo_main"
+pss-skyaware-demo      = "pss._cli:skyaware_demo_main"
 
 [tool.setuptools.packages.find]
 where = ["."]
