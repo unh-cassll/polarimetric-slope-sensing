@@ -84,6 +84,18 @@ def median_nc_path() -> Path:
 
 
 @pytest.fixture(scope="session")
+def piermont_wide_path() -> Path:
+    """Committed Piermont LDEO 5 mm wide mean frame; skip if absent."""
+    return _resolve_local_or_skip("piermont_wide_path")
+
+
+@pytest.fixture(scope="session")
+def piermont_narrow_stack_path() -> Path:
+    """Committed Piermont UNH 75 mm narrow stack; skip if absent."""
+    return _resolve_local_or_skip("piermont_narrow_stack_path")
+
+
+@pytest.fixture(scope="session")
 def synthetic_frame() -> tuple[np.ndarray, dict]:
     """A small DoFP frame synthesized from a known wave-slope field.
 

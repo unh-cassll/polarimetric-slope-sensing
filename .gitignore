@@ -16,6 +16,13 @@ _data/*.nc
 # water-surface elevation series (built by _tools/make_lidar_elevation_nc.py).
 !_data/asit2019_lidar_elevation_10min.nc
 
+# ... and the small committed dual-camera demo artifacts (Piermont 2025),
+# central-column uint16 mean frames produced once by
+# _examples/convert_piermont_dualcam.py: the LDEO 5 mm wide DoLP-AOI
+# calibration frame and the UNH 75 mm narrow multi-angle stack.
+!_data/piermont2025_ldeo_wide_5mm_mean.nc
+!_data/piermont2025_unh_narrow_75mm_stack.nc
+
 # Python build / cache files
 __pycache__/
 *.pyc

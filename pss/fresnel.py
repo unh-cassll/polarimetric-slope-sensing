@@ -75,6 +75,75 @@ def build_lookup_table(
     return DOLP_full, theta_full
 
 
+def lut_from_curve(
+    theta: np.ndarray, curve: np.ndarray, n_points: int = 10_000
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build an EMPIRICAL (DoLP, theta_i) lookup table from a measured curve.
+
+    Given a measured DoLP-vs-incidence profile -- e.g. the per-row DoLP(theta)
+    of a wide-FOV camera, which spans a large range of incidence angles in one
+    frame -- reduce it to the strictly-increasing rising branch (up to the DoLP
+    peak / Brewster's angle) and resample onto the same (DOLP_full, theta_full)
+    grid that `build_lookup_table` produces, so the result drops straight into
+    `compute_slope_field(lookup_table=...)` and `dolp_to_aoi`.
+
+    The reduction (sort by theta, truncate at the DoLP peak, keep strictly
+    increasing DoLP samples, PCHIP, clamp beyond the peak, force theta=0 at
+    DoLP=0) mirrors the ideal-Fresnel table build; it is the fragile step, so it
+    is deliberately faithful to the validated prototype.
+
+    Parameters
+    ----------
+    theta : ndarray
+        Incidence angle samples (deg). NaNs are dropped.
+    curve : ndarray
+        Measured DoLP at each `theta`. NaNs are dropped.
+    n_points : int
+        Size of the output DoLP grid (default 10000, matching the MATLAB).
+
+    Returns
+    -------
+    DOLP_full : ndarray, shape (n_points,)
+        Monotonic DoLP grid on [0, 1].
+    theta_full : ndarray, shape (n_points,)
+        Incidence angle (deg) for each DoLP via PCHIP along the rising branch.
+    """
+    theta = np.asarray(theta, dtype=np.float64)
+    curve = np.asarray(curve, dtype=np.float64)
+    m = np.isfinite(theta) & np.isfinite(curve)
+    th, dl = theta[m], curve[m]
+    if th.size < 2:
+        raise ValueError("lut_from_curve needs at least two finite samples")
+    o = np.argsort(th)
+    th, dl = th[o], dl[o]
+    # Rising branch only: from the start up to the DoLP peak.
+    ipk = int(np.argmax(dl))
+    th, dl = th[: ipk + 1], dl[: ipk + 1]
+    # Keep strictly-increasing DoLP (PCHIP requires strictly increasing x).
+    runmax = np.maximum.accumulate(np.concatenate([[-np.inf], dl[:-1]]))
+    keep = dl > runmax + 1e-6
+    keep[np.argmax(dl > 0)] = True
+    th, dl = th[keep], dl[keep]
+    if dl.size < 2:
+        raise ValueError(
+            "lut_from_curve found no usable rising branch (the DoLP-vs-theta "
+            "curve does not increase with incidence). Common cause: the wrong "
+            "`row_sign` in the wide-FOV geometry, which inverts the AOI-vs-row "
+            "mapping so the measured curve falls instead of rising.")
+
+    DOLP_full = np.linspace(0.0, 1.0, n_points)
+    tf = PchipInterpolator(dl, th, extrapolate=False)(DOLP_full)
+    # Clamp outside the MEASURED DoLP support: above the peak -> the peak's
+    # theta; below the smallest measured DoLP -> its (small-angle) theta. The
+    # two ends are filled separately -- filling both with the peak (as a single
+    # nan fill would) injects a spurious large angle at low DoLP and breaks
+    # monotonicity when the measured curve does not reach DoLP ~ 0.
+    tf = np.where(DOLP_full > dl[-1], th[-1], tf)
+    tf = np.where(DOLP_full < dl[0], th[0], tf)
+    tf[0] = 0.0
+    return DOLP_full, np.nan_to_num(tf, nan=th[-1])
+
+
 def load_lookup_table(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """Load a (DOLP_full, theta_full) table from a .mat file.
 

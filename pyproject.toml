@@ -83,7 +83,7 @@ all = [
 [project.urls]
 Homepage      = "https://github.com/unh-cassll/polarimetric-slope-sensing"
 "Source code" = "https://github.com/unh-cassll/polarimetric-slope-sensing"
-"E-PSS paper (TGRS 2026)" = "https://doi.org/10.1109/TGRS.2026.0000000"
+"E-PSS paper (JOE 2026)" = "https://doi.org/10.1109/JOE.2026.0000000"
 
 [project.scripts]
 pss-load-reduce        = "pss._cli:load_and_reduce_main"

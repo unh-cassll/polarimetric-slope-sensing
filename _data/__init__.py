@@ -67,6 +67,14 @@ MEAN_SLOPE_FILENAME = "asit2019_mean_slope_60s.nc"
 # elevation, packaged once from the raw elevation array.
 LIDAR_ELEVATION_FILENAME = "asit2019_lidar_elevation_10min.nc"
 
+# Committed dual-camera demo artifacts (Piermont 2025), produced once by
+# _examples/convert_piermont_dualcam.py from the v7.3 mean-frame structs. Both
+# are small (central column band, uint16 raw counts): the LDEO 5 mm WIDE frame
+# is the DoLP-AOI calibration input; the UNH 75 mm NARROW stack is the
+# multi-angle imager whose DoLP is inverted through the wide calibration.
+PIERMONT_WIDE_FILENAME = "piermont2025_ldeo_wide_5mm_mean.nc"
+PIERMONT_NARROW_FILENAME = "piermont2025_unh_narrow_75mm_stack.nc"
+
 
 def _md5_of(path: Path, chunk: int = 1 << 20) -> str:
     h = hashlib.md5()
@@ -222,6 +230,38 @@ def lidar_elevation():
         elev = np.asarray(ds.variables["elev_m"][...], dtype=float)
         t = np.asarray(ds.variables["time"][...], dtype=float)
     return t, elev
+
+
+def _committed_path(filename: str, regen_hint: str) -> Path:
+    path = EXAMPLES_DIR / filename
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{filename} not found in {EXAMPLES_DIR}. {regen_hint}")
+    return path
+
+
+def piermont_wide_path(*, allow_download: bool = True) -> Path:
+    """Local path to the committed Piermont LDEO 5 mm wide mean frame.
+
+    `allow_download` is accepted for a uniform resolver signature but ignored:
+    these artifacts are committed, not fetched (a missing file always raises).
+    """
+    return _committed_path(
+        PIERMONT_WIDE_FILENAME,
+        "It is a committed dual-camera demo artifact; regenerate it with "
+        "python _examples/convert_piermont_dualcam.py (needs the MATLAB data).")
+
+
+def piermont_narrow_stack_path(*, allow_download: bool = True) -> Path:
+    """Local path to the committed Piermont UNH 75 mm narrow stack.
+
+    `allow_download` is accepted for a uniform resolver signature but ignored
+    (committed artifact; a missing file always raises).
+    """
+    return _committed_path(
+        PIERMONT_NARROW_FILENAME,
+        "It is a committed dual-camera demo artifact; regenerate it with "
+        "python _examples/convert_piermont_dualcam.py (needs the MATLAB data).")
 
 
 def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = True,

@@ -89,7 +89,8 @@ class EpssResult:
     eta_ran: bool = False        # whether the eta stage ran
     long_wave_ran: bool = False  # whether the long-wave inversion ran
     dx_m: float | None = None    # ground dx used (from orthorectification)
-    inversion: str = "fresnel"   # "fresnel" or "skyaware"
+    inversion: str = "fresnel"   # fresnel | skyaware | empirical_wide |
+                                 # seapol_lut | hybrid
     skyaware_env: Any = None     # SkyAwareEnv used (skyaware path only)
     anchor: Any = None           # AnchorResult (skyaware path only)
     gain_mode: str | None = None # resolved gain mode actually used
@@ -149,6 +150,7 @@ def run_epss(
     # reduction with seapol's forward-model inversion + the empirical slope
     # anchor; gain_mode then selects the anchor amplitude (none/lab/empirical).
     inversion: str = "fresnel",
+    wide_calibration=None,
     acquisition_time_utc=None,
     site_lat: float | None = None,
     site_lon: float | None = None,
@@ -213,6 +215,23 @@ def run_epss(
             reference frame still enables the gain. The resolved mode and
             whether the auto-median was used are reported on EpssResult.
 
+        inversion : DoLP->AOI strategy.
+            - "fresnel" (default): ideal Fresnel lookup.
+            - "skyaware": seapol forward-model inversion (needs the optional
+              seapol package; see the sky-aware params below).
+            - "empirical_wide" / "seapol_lut" / "hybrid": use a DoLP->AOI table
+              measured/derived from a WIDE-FOV camera. Pass the calibration as
+              `wide_calibration`; the table is selected by the mode
+              (empirical / pure-seapol / seapol+fitted-pedestal-scale). These
+              run the same fast Fresnel reduction loop, just with a different
+              lookup table, and need NO seapol at run time (any seapol work
+              happened when the calibration was built).
+        wide_calibration : a pss.widefov.WideFOVCalibration, required by the
+            three wide-FOV inversion modes. Build it with
+            pss.widefov.calibrate_widefov on the wide camera's mean frame; the
+            narrow camera is then a normal run_epss record that consumes it.
+            Ignored by the "fresnel" and "skyaware" modes.
+
         keep_slope_results : retain the full per-frame SlopeResult objects on
             EpssResult.slope_results. Each holds ~10 full-resolution arrays,
             so a long record at sensor resolution multiplies memory use ~10x;
@@ -275,9 +294,22 @@ def run_epss(
     eta_ran = eta_ready
 
     inversion = str(inversion).lower()
-    if inversion not in ("fresnel", "skyaware"):
+    _WIDE_INVERSIONS = ("empirical_wide", "seapol_lut", "hybrid")
+    if inversion not in ("fresnel", "skyaware") + _WIDE_INVERSIONS:
         raise ValueError(
-            f"inversion must be 'fresnel' or 'skyaware'; got {inversion!r}")
+            "inversion must be one of 'fresnel', 'skyaware', 'empirical_wide', "
+            f"'seapol_lut', 'hybrid'; got {inversion!r}")
+    if inversion in _WIDE_INVERSIONS:
+        # Wide-FOV modes are the Fresnel reduction path with the DoLP->AOI table
+        # supplied by a wide-camera calibration instead of the ideal Fresnel
+        # curve. The LUT is already baked into the calibration, so these modes
+        # do NOT need seapol at run time (seapol was only needed when the
+        # calibration's seapol/hybrid table was built).
+        if wide_calibration is None:
+            raise ValueError(
+                f"inversion={inversion!r} requires wide_calibration "
+                "(build it with pss.widefov.calibrate_widefov on the wide "
+                "camera's mean frame).")
     if inversion == "skyaware":
         # Fail fast (and clearly) if the optional seapol dep is missing.
         require_seapol()
@@ -351,8 +383,10 @@ def run_epss(
                   f"anchor_mode={gain_mode!r} (resolution={resolution!r}, "
                   f"n_water={n_water})")
         else:
+            inv_note = (f", inversion={inversion!r} (wide-FOV LUT)"
+                        if inversion in _WIDE_INVERSIONS else "")
             print(f"  pss reduce : resolution={resolution!r}, method={method!r}, "
-                  f"gain_mode={gain_mode!r}{gain_note} "
+                  f"gain_mode={gain_mode!r}{gain_note}{inv_note} "
                   f"(assumed L0 layout, n_water={n_water})")
         if eta_ran:
             print(f"  eta stage  : ENABLED (fs={fs} Hz, theta_i={theta_i_mean_deg} "
@@ -366,7 +400,19 @@ def run_epss(
     # Reduction: raw frames -> per-frame slope stack. The Fresnel lookup (a
     # 200k-point PCHIP fit) is a per-record invariant, hoisted here.
     # ------------------------------------------------------------------
-    lut = build_lookup_table(n_water=n_water)
+    if inversion in _WIDE_INVERSIONS:
+        # Select the wide-calibration table for the requested mode.
+        _lut_attr = {"empirical_wide": "lut_empirical",
+                     "seapol_lut": "lut_seapol",
+                     "hybrid": "lut_hybrid"}[inversion]
+        lut = getattr(wide_calibration, _lut_attr, None)
+        if lut is None:
+            raise ValueError(
+                f"inversion={inversion!r} needs wide_calibration.{_lut_attr}, "
+                "which is None (the seapol/hybrid tables are only built when "
+                "sun geometry AND seapol are available at calibration time).")
+    else:
+        lut = build_lookup_table(n_water=n_water)
     skyaware_env_used = None
     anchor_used = None
 
@@ -425,7 +471,8 @@ def run_epss(
             ref_res = compute_slope_field(
                 np.asarray(gain_reference_frame), resolution=resolution,
                 method=method, gain_mode="none", n_water=n_water,
-                lookup_table=lut)
+                lookup_table=lut,
+                focal_length_m=focal_length_m, pixel_pitch_m=pixel_pitch_m)
             dolp_ref = float(np.nanmedian(
                 np.sqrt(ref_res.s1 ** 2 + ref_res.s2 ** 2)))
 
@@ -441,6 +488,8 @@ def run_epss(
                 lookup_table=lut,
                 gain_reference_frame=gain_reference_frame if use_ref_frame else None,
                 dolp_obs_median=None if use_ref_frame else dolp_ref,
+                focal_length_m=focal_length_m,   # used only by resolution="pistellato"
+                pixel_pitch_m=pixel_pitch_m,
             )
 
         res0 = _reduce(frames[0], use_ref_frame=True)
@@ -471,7 +520,8 @@ def run_epss(
     # ------------------------------------------------------------------
     if verbose:
         print(f"  orthorectifying stack (static geometry) ...")
-    pitch_field = pixel_pitch_m * (2.0 if resolution == "native" else 1.0)
+    pitch_field = pixel_pitch_m * (2.0 if resolution in ("native", "pistellato")
+                                   else 1.0)
     ortho = orthorectify_static(
         slope_x, slope_y,
         freeboard_m=freeboard_m,

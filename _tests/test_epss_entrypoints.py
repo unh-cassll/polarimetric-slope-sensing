@@ -235,3 +235,64 @@ def test_from_slopes_nan_input_is_tolerated():
     r = run_epss_from_slopes(sx, sy, dx_m=dx, fs=fs, downsample=2,
                              short_wave=True, verbose=False)
     assert np.isfinite(r.eta_xyt).all()
+
+
+# ---------------------------------------------------------------------------
+# C. Wide-FOV inversion modes + the Pistellato resolution.
+# ---------------------------------------------------------------------------
+from types import SimpleNamespace
+
+from pss import build_lookup_table, compute_slope_field
+from pss.widefov import WideFOVCalibration
+
+
+def _passthrough_calibration():
+    """A calibration whose empirical LUT IS the ideal Fresnel table, so the
+    'empirical_wide' path must produce identical slopes to 'fresnel'."""
+    lut = build_lookup_table(n_water=1.34)
+    return WideFOVCalibration(
+        theta_deg=np.array([0.0]), dolp_measured=np.array([0.0]),
+        lut_fresnel=lut, lut_empirical=lut, lut_seapol=None, lut_hybrid=None,
+        n_water=1.34)
+
+
+def test_unknown_inversion_raises():
+    with pytest.raises(ValueError, match="inversion must be"):
+        run_epss(_raw_stack(3), inversion="bogus", verbose=False)
+
+
+def test_empirical_wide_requires_calibration():
+    with pytest.raises(ValueError, match="requires wide_calibration"):
+        run_epss(_raw_stack(3), inversion="empirical_wide", verbose=False)
+
+
+def test_hybrid_missing_lut_raises():
+    # Calibration present, but its hybrid LUT is None (seapol absent at build).
+    cal = _passthrough_calibration()
+    with pytest.raises(ValueError, match="lut_hybrid"):
+        run_epss(_raw_stack(3), inversion="hybrid", wide_calibration=cal,
+                 verbose=False)
+
+
+def test_empirical_wide_matches_fresnel_when_lut_is_identical():
+    frames = _raw_stack(4)
+    cal = _passthrough_calibration()
+    r_fre = run_epss(frames, inversion="fresnel", verbose=False)
+    r_emp = run_epss(frames, inversion="empirical_wide", wide_calibration=cal,
+                     verbose=False)
+    assert r_emp.inversion == "empirical_wide"
+    assert np.allclose(r_emp.slope_x, r_fre.slope_x, equal_nan=True)
+    assert np.allclose(r_emp.slope_y, r_fre.slope_y, equal_nan=True)
+
+
+def test_pistellato_resolution_requires_geometry():
+    frame = _raw_stack(1)[0]
+    with pytest.raises(ValueError, match="requires focal_length_m"):
+        compute_slope_field(frame, resolution="pistellato")
+
+
+def test_pistellato_resolution_returns_half_res_result():
+    frame = _raw_stack(1, H=64, W=64)[0]
+    r = compute_slope_field(frame, resolution="pistellato",
+                            focal_length_m=0.005, pixel_pitch_m=3.45e-6)
+    assert r.Sx.shape == (32, 32)

@@ -52,6 +52,8 @@ def compute_slope_field(
     lookup_table: tuple[np.ndarray, np.ndarray] | None = None,
     gain_reference_frame: np.ndarray | None = None,
     dolp_obs_median: float | None = None,
+    focal_length_m: float | None = None,
+    pixel_pitch_m: float | None = None,
 ) -> SlopeResult:
     """Compute the full slope-field result from a raw DoFP frame.
 
@@ -59,7 +61,7 @@ def compute_slope_field(
     ----------
     frame : ndarray
         Raw DoFP image, 2D.
-    resolution : {"native", "full"}
+    resolution : {"native", "pistellato", "full"}
         Output spatial resolution.
 
         - "native" (default): one Stokes vector per 2x2 super-pixel, returned
@@ -67,6 +69,12 @@ def compute_slope_field(
           equals the measurement grid. The `method` argument is ignored. The effective
           pixel pitch is twice the sensor pitch (pass the doubled dx to any
           downstream wavelength/spectrum computation).
+        - "pistellato": like "native" (half resolution, per super-pixel) but the
+          Stokes parameters are solved with the Pistellato & Bergamasco (2024)
+          projective polarizer-tilt correction. Requires `focal_length_m` and
+          `pixel_pitch_m` (to build the camera intrinsics K). Meaningful for
+          wide-FOV lenses, where peripheral rays tilt each micropolarizer
+          relative to its ray; effectively a no-op for telephoto lenses.
         - "full": interpolate each orientation back to the full (H, W) grid
           using the chosen `method`. This implies 2x the real linear
           resolution but partially corrects the IFOV half-pixel offset.
@@ -103,14 +111,25 @@ def compute_slope_field(
     """
     method_kwargs = method_kwargs or {}
     resolution = resolution.lower()
-    if resolution not in ("native", "full"):
+    if resolution not in ("native", "pistellato", "full"):
         raise ValueError(
-            f"resolution must be 'native' or 'full'; got {resolution!r}"
+            f"resolution must be 'native', 'pistellato', or 'full'; "
+            f"got {resolution!r}"
+        )
+    if resolution == "pistellato" and (focal_length_m is None
+                                       or pixel_pitch_m is None):
+        raise ValueError(
+            "resolution='pistellato' requires focal_length_m and pixel_pitch_m "
+            "(to build the camera intrinsics K for the projective correction)."
         )
 
     def _stokes(f: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if resolution == "native":
             return by_superpixel(f)
+        if resolution == "pistellato":
+            from .pistellato import corrected_stokes_superpixel
+            return corrected_stokes_superpixel(
+                f, focal_length_m=focal_length_m, pixel_pitch_m=pixel_pitch_m)
         return compute_stokes(f, method=method, **method_kwargs)
 
     # 1. Stokes parameters from the raw frame.

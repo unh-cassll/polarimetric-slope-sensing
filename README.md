@@ -244,7 +244,11 @@ polarimetric-slope-sensing/
 │   ├── __init__.py
 │   ├── stokes.py                         3 Stokes methods (Ratliff M4 default)
 │   ├── gain.py                           none / lab / empirical DoLP gain
-│   ├── fresnel.py                        DoLP <-> θᵢ lookup (Fresnel inversion)
+│   ├── fresnel.py                        DoLP <-> θᵢ lookup (+ lut_from_curve)
+│   ├── pistellato.py                     projective polarizer-tilt correction
+│   ├── widefov.py                        wide-FOV DoLP-AOI calibration / dual-camera
+│   ├── skyaware.py                       seapol forward-model inversion (optional)
+│   ├── anchor.py                         empirical slope-amplitude anchor
 │   ├── slope.py                          end-to-end pipeline
 │   ├── io.py                             NetCDF reader (2-D and time-stack schemas)
 │   └── _cli.py                           console-script bridge
@@ -259,12 +263,16 @@ polarimetric-slope-sensing/
 │   └── README.md                         package-specific quick reference
 ├── _examples/
 │   ├── load_and_reduce.py                pss demo (single frame; optional --median)
-│   └── load_and_reduce_with_median_gain.py  E-PSS median-referenced gain demo
+│   ├── load_and_reduce_with_median_gain.py  E-PSS median-referenced gain demo
+│   ├── convert_piermont_dualcam.py       one-shot: Piermont .mat -> NetCDF artifacts
+│   └── widefov_dualcam_demo.py           wide-FOV calibrates narrow imager (4-way)
 ├── _data/                               example data + Zenodo resolver package
 │   ├── __init__.py                       Zenodo resolver (download + md5);
 │   │                                     mean_wave_timeseries() + lidar_elevation()
 │   ├── asit2019_mean_slope_60s.nc        committed: spatial-mean slope series (few KB)
-│   └── asit2019_lidar_elevation_10min.nc committed: Riegl LD90-3 elevation (~105 KB)
+│   ├── asit2019_lidar_elevation_10min.nc committed: Riegl LD90-3 elevation (~105 KB)
+│   ├── piermont2025_ldeo_wide_5mm_mean.nc   committed: wide DoLP-AOI cal frame (~0.2 MB)
+│   └── piermont2025_unh_narrow_75mm_stack.nc committed: narrow multi-angle stack (~2 MB)
 ├── _figures/
 │   ├── example_output.jpg                rendered output of the pss demo
 │   └── validation_eta_long_vs_lidar.png  eta_long vs lidar validation figure
@@ -278,6 +286,10 @@ polarimetric-slope-sensing/
 │   ├── test_fresnel.py
 │   ├── test_pipeline.py                  synthetic + NetCDF end-to-end
 │   ├── test_median_gain.py               stack reader + median-referenced gain
+│   ├── test_pistellato.py                projective correction (limits + round-trip)
+│   ├── test_widefov.py                   calibration + lut_from_curve rising branch
+│   ├── test_widefov_recovery.py          wide->narrow recovery (synthetic + Piermont)
+│   ├── test_epss_entrypoints.py          gain decision + inversion modes
 │   └── test_eta_field_recon.py
 ├── _original_routines_MATLAB/            original MATLAB routines (archived)
 ├── PSS_walkthrough.ipynb                 visual walkthrough notebook (grayscale)
@@ -287,7 +299,7 @@ polarimetric-slope-sensing/
 └── README.md
 ```
 
-The raw NetCDF files are **not** committed — they download from Zenodo on first use and cache in `_data/` (md5-verified), so `_data/*.nc` is `.gitignore`'d. Two small derived artifacts are force-included in git as exceptions: `asit2019_mean_slope_60s.nc` (the spatial-mean slope series) and `asit2019_lidar_elevation_10min.nc` (the Riegl lidar validation series); see the Input-data section.
+The raw NetCDF files are **not** committed — they download from Zenodo on first use and cache in `_data/` (md5-verified), so `_data/*.nc` is `.gitignore`'d. A few small derived/demo artifacts are force-included in git as exceptions: `asit2019_mean_slope_60s.nc` (the spatial-mean slope series), `asit2019_lidar_elevation_10min.nc` (the Riegl lidar validation series), and the two Piermont 2025 dual-camera mean frames (`piermont2025_ldeo_wide_5mm_mean.nc`, `piermont2025_unh_narrow_75mm_stack.nc`); see the Input-data and wide-FOV sections.
 
 ## Install
 
@@ -361,6 +373,53 @@ where `DoLP_ideal(θᵢ)` is the Fresnel prediction for unpolarized sky and no u
 - `dolp_obs_median=` (a precomputed reference DoLP scalar) to `apply_gain`, for the single-frame case where a temporal median can't be formed.
 
 If both are given, the reference frame takes precedence. **If neither is supplied, no gain is applied** (the result is downgraded to `gain_mode="none"` with an explanatory note) — the gain is never silently self-referenced.
+
+## Wide-FOV and dual-camera slope sensing
+
+A narrow telephoto imager sees only a few degrees of incidence, so it cannot measure the DoLP-vs-angle-of-incidence (AOI) relationship its own inversion needs — feeding its DoLP through the *ideal* Fresnel curve is biased by the real sky polarization and the unpolarized water-leaving pedestal. A **wide-FOV camera** sees water across tens of degrees of incidence in a single (time-averaged) frame, so it *measures* that DoLP–AOI curve directly. `pss.widefov.calibrate_widefov` turns one wide mean frame into DoLP→AOI lookup tables that a narrow imager's reduction consumes in place of the ideal Fresnel table.
+
+```python
+import datetime as dt
+from pss import read_netcdf_frame, calibrate_widefov
+from pss.skyaware import solar_position
+from epss import run_epss
+
+wide, wm = read_netcdf_frame("piermont2025_ldeo_wide_5mm_mean.nc")
+sun_z, sun_a = solar_position(dt.datetime.fromisoformat(
+    wm.raw_attrs["acquisition_time_utc"]), wm.raw_attrs["site_lat"], wm.raw_attrs["site_lon"])
+
+cal = calibrate_widefov(                       # build the DoLP->AOI tables
+    wide, focal_length_m=0.005, pixel_pitch_m=3.45e-6,
+    incidence_mean_deg=wm.theta_i_mean_deg, dolp_gain=1/0.81,
+    sun_zenith_deg=sun_z, sun_azimuth_deg=sun_a, heading_deg=350.0)
+
+# Reduce the NARROW camera through the wide-derived table:
+res = run_epss(narrow_frames, inversion="empirical_wide", wide_calibration=cal,
+               theta_i_mean_deg=27.0)
+```
+
+`calibrate_widefov` returns a `WideFOVCalibration` holding four DoLP→AOI tables (each a `pss.fresnel` `(DOLP_full, theta_full)` tuple that drops straight into `compute_slope_field(lookup_table=...)`):
+
+| table             | `inversion=`       | what it is                                                        |
+|-------------------|--------------------|-------------------------------------------------------------------|
+| `lut_fresnel`     | `"fresnel"`        | ideal Fresnel DoLP(θ) — sky-blind baseline                        |
+| `lut_empirical`   | `"empirical_wide"` | the wide camera's **measured** DoLP(θ) — usually the winner       |
+| `lut_seapol`      | `"seapol_lut"`     | pure `seapol` forward prediction (needs sun geometry + `seapol`)  |
+| `lut_hybrid`      | `"hybrid"`         | `seapol` prediction + a fitted water-leaving pedestal & sky scale |
+
+On the bundled Piermont 2025 dual-camera example, recovering the narrow imager's view angle gives MAE **≈1.8°** for the empirical wide LUT vs **≈10°** for the ideal Fresnel curve — the wide camera literally measures the relationship the narrow one needs. The `seapol`/`hybrid` tables require the optional `seapol` package; without it they are `None` and only a downstream request for them raises (the Fresnel and empirical tables never need `seapol`). Run `_examples/widefov_dualcam_demo.py` for the full four-way comparison and figure.
+
+### Projective polarizer-tilt correction (Pistellato 2024)
+
+Wide lenses tilt each DoFP micropolarizer relative to its (non-perpendicular) ray, biasing the recovered AoLP/DoLP — several degrees of AoLP on a 5 mm lens, negligible (~0.02°) on a 75 mm. `pss.pistellato` implements the per-pixel projective Stokes correction of Pistellato & Bergamasco (2024) as a tight batched solve. `calibrate_widefov` applies it automatically; you can also select it for any reduction via `resolution="pistellato"` (it then needs `focal_length_m` and `pixel_pitch_m` to build the camera intrinsics):
+
+```python
+from pss import compute_slope_field
+res = compute_slope_field(frame, resolution="pistellato",
+                          focal_length_m=0.005, pixel_pitch_m=3.45e-6)
+```
+
+The bundled Piermont artifacts are produced once from the raw MATLAB mean-frame structs by `_examples/convert_piermont_dualcam.py` (a developer one-shot needing `h5py`/`pandas`/`openpyxl`).
 
 ## Library use
 
