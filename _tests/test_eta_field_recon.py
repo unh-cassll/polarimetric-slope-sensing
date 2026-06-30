@@ -22,44 +22,6 @@ from eta_field_recon import reconstruct_eta_field, lindisp_with_current
 # spectrum looked perfect.
 # ---------------------------------------------------------------------------
 
-def _mono_roundtrip(f0, theta_deg, w0, fs=4.0, T=2048, depth=100.0,
-                    per_scale=True):
-    """Round-trip a single tone: true cos(wt) elevation -> exact slopes at
-    theta_deg -> CWT -> krogstad -> inverse. Returns (eta_true, rec) over the
-    cone-of-influence-light central window."""
-    from ewdm.wavelets import Morlet
-    from eta_field_recon.wavelet_core import (
-        _cwt, _inverse_cwt, krogstad_eta_coeffs, skirt_correction)
-
-    mother = Morlet(float(w0))
-    t = np.arange(T) / fs
-    omega = 2 * np.pi * f0
-    _, k = lindisp_with_current(np.array([omega]), depth, 0.0)
-    k = k[0]
-    th = np.deg2rad(theta_deg)
-    eta_true = np.cos(omega * t)
-    sx = k * np.cos(th) * np.sin(omega * t)      # d eta/dx at the origin
-    sy = k * np.sin(th) * np.sin(omega * t)      # d eta/dy at the origin
-    freqs = np.linspace(0.05, 2.0, 80)
-    Wsx = _cwt(sx, freqs, fs, mother).values
-    Wsy = _cwt(sy, freqs, fs, mother).values
-    _, k_disp = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
-    skirt = skirt_correction(freqs, fs, k_disp, T, mother, per_scale=per_scale)
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k_disp, skirt_gain=skirt)
-    rec = _inverse_cwt(W_eta, freqs, fs, mother, per_scale=per_scale)
-    c = slice(int(0.2 * T), int(0.8 * T))
-    return eta_true[c], rec[c]
-
-
-@pytest.mark.parametrize("w0", [4, 6, 8, 10, 12])
-@pytest.mark.parametrize("per_scale", [False, True])
-def test_monochromatic_upright(w0, per_scale):
-    """Reconstruction stays upright (+correlation) for every mother, not just
-    the cdelta-tabulated Morlet(6)."""
-    eta_true, rec = _mono_roundtrip(0.2, 45.0, w0, per_scale=per_scale)
-    assert np.corrcoef(eta_true, rec)[0, 1] > 0.99
-
-
 def test_cdelta_sentinel_warns_not_silent():
     """A non-Morlet(6) mother (ewdm cdelta == -1 sentinel) must warn, never
     pass through silently and invert the surface."""
@@ -122,125 +84,6 @@ def test_coi_nan_bands_do_not_poison_reconstruction():
 
 
 # ---------------------------------------------------------------------------
-# Direction-sign robustness: recovered Hs must not dip on the along-look axis
-# (90/270 deg), where the cross-look slope channel vanishes and the pointwise
-# relative-phase sign would otherwise be set by noise.
-# ---------------------------------------------------------------------------
-
-def _unidir_sea(theta_deg, s=64, Hs=1.0, fp=0.12, fs=2.0, T=2048, depth=100.0,
-                seed=1):
-    """Gaussian sea: Bretschneider S(f) x narrow cos-2s spreading about
-    theta_deg. Returns spatial-point (sx, sy, eta) series with exact slope-
-    elevation cross-covariance (sx,sy are the quadrature of eta scaled by
-    k*cos/sin(theta))."""
-    rng = np.random.default_rng(seed)
-    t = np.arange(T) / fs
-    df = fs / T
-    f = np.arange(1, T // 2) * df
-    S = (5 / 16) * Hs ** 2 * fp ** 4 / f ** 5 * np.exp(-1.25 * (fp / f) ** 4)
-    th = np.deg2rad(theta_deg) + rng.normal(0, 1.0 / np.sqrt(2 * s + 1), f.size)
-    a = np.sqrt(2 * S * df)
-    ph = rng.uniform(0, 2 * np.pi, f.size)
-    om = 2 * np.pi * f
-    _, k = lindisp_with_current(om, depth, 0.0)
-    arg = np.outer(t, om) - ph[None, :]
-    eta = (a[None, :] * np.cos(arg)).sum(1)
-    sx = ((a * k * np.cos(th))[None, :] * np.sin(arg)).sum(1)
-    sy = ((a * k * np.sin(th))[None, :] * np.sin(arg)).sum(1)
-    return sx, sy, eta, dict(fs=fs, T=T, depth=depth)
-
-
-def _hs_ratio(sea, w0=6.0):
-    """Recovered Hs / input Hs through the long-wave krogstad inversion."""
-    from ewdm.wavelets import Morlet
-    from scipy.signal.windows import tukey
-    from eta_field_recon.wavelet_core import _cwt, _inverse_cwt, krogstad_eta_coeffs
-    sx, sy, eta, p = sea
-    fs, T, depth = p["fs"], p["T"], p["depth"]
-    mother = Morlet(w0)
-    freqs = np.linspace(0.05, 2.0, 80)
-    win = tukey(T, 0.25)
-    Wsx = _cwt((sx - sx.mean()) * win, freqs, fs, mother).values
-    Wsy = _cwt((sy - sy.mean()) * win, freqs, fs, mother).values
-    _, kd = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, kd)
-    rec = _inverse_cwt(W_eta, freqs, fs, mother, per_scale=False)
-    c = slice(int(0.2 * T), int(0.8 * T))
-    return (4 * np.std(rec[c])) / (4 * np.std((eta * win)[c]))
-
-
-def test_direction_invariance_unidirectional():
-    ratios = [_hs_ratio(_unidir_sea(theta_deg=d, s=64)) for d in range(0, 360, 5)]
-    assert min(ratios) > 0.92                 # no cardinal-axis dip
-    assert max(ratios) - min(ratios) < 0.06
-
-
-def test_along_look_axis_no_hs_dip():
-    """Direct 90 deg vs 45 deg check: the along-look axis must recover the same
-    Hs as a diagonal sea (the bug collapsed 90 deg to ~0.77)."""
-    r45 = _hs_ratio(_unidir_sea(theta_deg=45, s=64))
-    r90 = _hs_ratio(_unidir_sea(theta_deg=90, s=64))
-    assert r90 > 0.92
-    assert abs(r90 - r45) < 0.05
-
-
-# ---------------------------------------------------------------------------
-# Directional-spreading Hs bias: the krogstad projection discards off-axis
-# variance, so recovered Hs runs low for broad seas. The r2-based correction
-# (directional_spread + spread_hs_factor) must restore it to within ~3%.
-# ---------------------------------------------------------------------------
-
-def _hs_ratio_calibrated(sea, w0=6.0):
-    """Recovered/input Hs and measured r2 on the calibrated (per_scale+skirt)
-    path, where the spreading bias is mother-agnostic."""
-    from ewdm.wavelets import Morlet
-    from scipy.signal.windows import tukey
-    from eta_field_recon.wavelet_core import (
-        _cwt, _inverse_cwt, krogstad_eta_coeffs, skirt_correction,
-        directional_spread)
-    sx, sy, eta, p = sea
-    fs, T, depth = p["fs"], p["T"], p["depth"]
-    mother = Morlet(w0)
-    freqs = np.linspace(0.05, 2.0, 80)
-    win = tukey(T, 0.25)
-    Wsx = _cwt((sx - sx.mean()) * win, freqs, fs, mother).values
-    Wsy = _cwt((sy - sy.mean()) * win, freqs, fs, mother).values
-    _, kd = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
-    sg = skirt_correction(freqs, fs, kd, T, mother, per_scale=True)
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, kd, skirt_gain=sg)
-    rec = _inverse_cwt(W_eta, freqs, fs, mother, per_scale=True)
-    c = slice(int(0.2 * T), int(0.8 * T))
-    ratio = np.std(rec[c]) / np.std((eta * win)[c])
-    r2 = directional_spread(Wsx[:, c], Wsy[:, c])["r2"]
-    return ratio, r2
-
-
-def test_directional_spread_monotonic_in_r2():
-    """r2 must fall monotonically as the cos-2s spread broadens."""
-    r2s = [_hs_ratio_calibrated(_unidir_sea(theta_deg=45, s=s))[1]
-           for s in (1, 4, 16, 64)]
-    assert all(a < b for a, b in zip(r2s, r2s[1:]))   # increasing with s
-
-
-@pytest.mark.parametrize("s", [2, 8, 32])
-def test_spread_correction_recovers_hs(s):
-    """Corrected Hs within ~3% of input across cos-2s s in {2,8,32} at 45 deg."""
-    from eta_field_recon.wavelet_core import spread_hs_factor
-    corrected = []
-    for seed in range(4):
-        sea = _unidir_sea(theta_deg=45, s=s, seed=seed)
-        ratio, r2 = _hs_ratio_calibrated(sea)
-        corrected.append(ratio * spread_hs_factor(r2))
-    assert abs(np.mean(corrected) - 1.0) < 0.03
-
-
-def test_spread_factor_unity_for_unidirectional():
-    from eta_field_recon.wavelet_core import spread_hs_factor
-    assert abs(spread_hs_factor(1.0) - 1.0) < 0.02   # no boost when unidirectional
-    assert spread_hs_factor(0.5) > spread_hs_factor(0.9)   # more boost when broad
-
-
-# ---------------------------------------------------------------------------
 # Aperture transfer function: averaging slope over a finite footprint low-passes
 # the wave by H(k); the inversion can divide it back out below the null.
 # ---------------------------------------------------------------------------
@@ -276,208 +119,6 @@ def test_aperture_transfer_gain_inverts_below_null_nan_above():
     np.testing.assert_allclose(g[good], 1.0 / H[good], rtol=1e-10)
     assert np.all(np.isnan(g[~good]))
     assert np.all(g[good] >= 1.0)                # a correction never attenuates
-
-
-def test_aperture_correction_boosts_high_frequency_eta():
-    """End-to-end: a disc-aperture reconstruction with the transfer correction
-    recovers more variance than without (the high-f bands are un-suppressed)."""
-    from eta_field_recon import reconstruct_eta_field
-    fs, T = 4.0, 512
-    f0 = 0.4                                     # mid-band, meaningfully suppressed
-    g = 9.806
-    k0 = (2 * np.pi * f0) ** 2 / g
-    t = np.arange(T) / fs
-    Ny = Nx = 24
-    dx = 0.05                                    # ~1.2 m frame
-    # uniform-in-time swell tilt along +y, spatially resolved so the disc mean
-    # is suppressed by H(k0 R)
-    x = (np.arange(Nx) - Nx / 2) * dx
-    phase = k0 * x[None, None, :] - 2 * np.pi * f0 * t[:, None, None]
-    sy = (k0 * 0.1 * np.cos(phase)) * np.ones((T, Ny, Nx))
-    sx = np.zeros_like(sy)
-    common = dict(dx=dx, fs=fs, water_depth_m=100.0, downsample=2,
-                  long_wave=True, short_wave=False,
-                  aperture_diameter_m=0.8, verbose=False)
-    _, el_raw, _, _, _ = reconstruct_eta_field(sx, sy, **common)
-    _, el_cor, _, _, diag = reconstruct_eta_field(
-        sx, sy, aperture_transfer_correct=True, **common)
-    assert diag["aperture_gain"] is not None
-    assert el_cor.std() > el_raw.std()           # correction restores amplitude
-
-
-# ---------------------------------------------------------------------------
-# Multi-aperture long-wave blend: large disc (low noise) below the handoff,
-# small disc (less aperture suppression) above, joined at the maximum-overlap
-# frequency.
-# ---------------------------------------------------------------------------
-
-def test_crossover_finds_minimum_ratio():
-    from eta_field_recon import aperture_crossover_frequency
-    freqs = np.linspace(0.05, 2.0, 80)
-    # ratio elevated at both ends (small-disc noise low-f, suppression high-f),
-    # minimum at 0.3 Hz
-    ratio = 1.0 + (np.log2(freqs / 0.3)) ** 2
-    P_small = ratio
-    P_large = np.ones_like(freqs)
-    fx = aperture_crossover_frequency(P_small, P_large, freqs, band=(0.1, 1.0))
-    assert abs(fx - 0.3) < 0.05
-
-
-def test_blend_takes_large_below_small_above():
-    """Blended coeffs follow the large disc below the handoff and the small disc
-    above it."""
-    from eta_field_recon import blend_aperture_coeffs
-    freqs = np.linspace(0.05, 2.0, 80)
-    T = 32
-    center = 0.35
-    # small disc inflated below center (1/k^2-amplified noise), large disc
-    # suppressed above center (aperture transfer); they agree at center, so the
-    # power ratio (small/large) has its minimum there -> handoff at center.
-    A_small = 1.0 + 2.0 * np.clip(np.log2(center / freqs), 0, None)
-    A_large = 1.0 / (1.0 + np.clip(np.log2(freqs / center), 0, None))
-    W_small = (A_small[:, None] * np.ones((freqs.size, T))).astype(complex)
-    W_large = (A_large[:, None] * np.ones((freqs.size, T))).astype(complex)
-    W_bl, xovers = blend_aperture_coeffs([W_large, W_small], freqs, band=(0.1, 1.0))
-    assert len(xovers) == 1
-    assert abs(xovers[0] - center) < 0.1
-    lowf = freqs < xovers[0] / 2.5      # well below the logistic transition
-    highf = freqs > xovers[0] * 2.5     # well above it
-    # below handoff blended ~ large (clean); above ~ small (less suppressed)
-    assert np.allclose(np.abs(W_bl[lowf]), np.abs(W_large[lowf]), atol=0.1)
-    assert np.allclose(np.abs(W_bl[highf]), np.abs(W_small[highf]), atol=0.1)
-
-
-def test_reconstruct_multi_aperture_runs_and_reports_crossovers():
-    """reconstruct_eta_field with aperture_diameters_m blends discs and reports
-    the handoff frequencies in diag."""
-    from eta_field_recon import reconstruct_eta_field
-    fs, T, Ny, Nx, dx = 10.0, 256, 24, 24, 0.05
-    g = 9.806
-    t = np.arange(T) / fs
-    rng = np.random.RandomState(0)
-    # a swell (uniform tilt) + a shorter wave resolved across the frame
-    x = (np.arange(Nx) - Nx / 2) * dx
-    k1 = (2 * np.pi * 0.5) ** 2 / g
-    sy = (0.15 * np.sin(2 * np.pi * 0.12 * t))[:, None, None] * np.ones((T, Ny, Nx))
-    sy = sy + 0.05 * np.cos(k1 * x[None, None, :] - 2 * np.pi * 0.5 * t[:, None, None])
-    sx = np.zeros((T, Ny, Nx))
-    _, el, _, _, diag = reconstruct_eta_field(
-        sx, sy, dx=dx, fs=fs, water_depth_m=100.0, downsample=2,
-        long_wave=True, short_wave=False,
-        aperture_diameters_m=[1.0, 0.4], verbose=False)
-    assert diag["aperture_crossovers"] is not None
-    assert len(diag["aperture_crossovers"]) == 1
-    assert np.isfinite(el).all() and el.std() > 0
-
-
-# ---------------------------------------------------------------------------
-# Spectral recolor: keep the Krogstad phase, impose the directionally-complete
-# direct amplitude. Closes the projection-loss Hs shortfall for broad seas.
-# ---------------------------------------------------------------------------
-
-def _bandstd(x, fs, lo=0.06, hi=1.5):
-    """Std of x band-limited to [lo, hi] Hz (FFT brick-wall)."""
-    n = len(x)
-    X = np.fft.rfft(x - np.mean(x))
-    fr = np.fft.rfftfreq(n, 1.0 / fs)
-    X[(fr < lo) | (fr > hi)] = 0.0
-    return np.std(np.fft.irfft(X, n))
-
-
-def _krog_long(sea, freqs=None):
-    """Plain (uncalibrated) Krogstad long-wave series for a sea."""
-    from eta_field_recon.wavelet_core import _cwt, _inverse_cwt, krogstad_eta_coeffs
-    from scipy.signal.windows import tukey
-    sx, sy, eta, p = sea
-    fs, T, depth = p["fs"], p["T"], p["depth"]
-    if freqs is None:
-        freqs = np.linspace(0.05, 2.0, 80)
-    win = tukey(T, 0.25)
-    Wsx = _cwt((sx - sx.mean()) * win, freqs, fs).values
-    Wsy = _cwt((sy - sy.mean()) * win, freqs, fs).values
-    _, kd = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, kd)
-    return _inverse_cwt(W_eta, freqs, fs, per_scale=False)
-
-
-@pytest.mark.parametrize("s", [32, 8, 2])
-def test_recolor_recovers_directional_variance(s):
-    """Krogstad under-reads broader seas; recoloring to the direct amplitude
-    restores ~unit Hs regardless of spread."""
-    from eta_field_recon import recolor_to_direct_spectrum
-    krog, rec = [], []
-    for seed in range(4):
-        sea = _unidir_sea(theta_deg=45, s=s, seed=seed)
-        sx, sy, eta, p = sea
-        el_krog = _krog_long(sea)
-        el_rec = recolor_to_direct_spectrum(
-            el_krog, [(sx - sx.mean(), sy - sy.mean(), None)],
-            p["fs"], p["depth"], highpass_fmin=0.04)
-        krog.append(_bandstd(el_krog, p["fs"]) / _bandstd(eta, p["fs"]))
-        rec.append(_bandstd(el_rec, p["fs"]) / _bandstd(eta, p["fs"]))
-    krog, rec = np.mean(krog), np.mean(rec)
-    assert rec > krog                         # recovers the projection loss
-    assert abs(rec - 1.0) < 0.05              # lands on unit Hs
-
-
-def test_recolor_amplitude_independent_of_carrier_scale():
-    """Output depends only on the carrier PHASE: scaling eta_krog leaves it
-    unchanged (the magnitude comes entirely from the direct slope spectrum)."""
-    from eta_field_recon import recolor_to_direct_spectrum
-    sea = _unidir_sea(theta_deg=30, s=8, seed=3)
-    sx, sy, _, p = sea
-    el = _krog_long(sea)
-    e1 = recolor_to_direct_spectrum(el, [(sx, sy, None)], p["fs"], p["depth"])
-    e2 = recolor_to_direct_spectrum(7.0 * el, [(sx, sy, None)], p["fs"], p["depth"])
-    np.testing.assert_allclose(e1, e2, atol=1e-9)
-
-
-def test_recolor_zero_slopes_give_zero():
-    """Amplitude comes from the slopes: zero slope variance -> zero eta,
-    whatever the carrier."""
-    from eta_field_recon import recolor_to_direct_spectrum
-    sea = _unidir_sea(theta_deg=30, s=8, seed=0)
-    _, _, _, p = sea
-    z = np.zeros(p["T"])
-    out = recolor_to_direct_spectrum(_krog_long(sea), [(z, z, None)],
-                                     p["fs"], p["depth"])
-    np.testing.assert_allclose(out, 0.0, atol=1e-12)
-
-
-def test_recolor_blend_path_jinc_corrects_two_discs():
-    """Multi-disc recolor (jinc + aperture blend) runs and returns finite,
-    non-trivial eta."""
-    from eta_field_recon import recolor_to_direct_spectrum
-    sea = _unidir_sea(theta_deg=45, s=8, seed=1)
-    sx, sy, _, p = sea
-    sx, sy = sx - sx.mean(), sy - sy.mean()
-    out = recolor_to_direct_spectrum(
-        _krog_long(sea), [(sx, sy, 2.915), (sx, sy, 0.729)],
-        p["fs"], p["depth"], highpass_fmin=0.05, blend_band=(0.06, 0.6))
-    assert np.isfinite(out).all() and out.std() > 0
-
-
-def test_reconstruct_recolor_direct_changes_eta_long():
-    """recolor_direct=True recolors the multi-aperture long wave: eta_long stays
-    finite, differs from the plain Krogstad path, and diag carries the carrier."""
-    from eta_field_recon import reconstruct_eta_field
-    fs, T, Ny, Nx, dx = 10.0, 256, 24, 24, 0.05
-    g = 9.806
-    t = np.arange(T) / fs
-    x = (np.arange(Nx) - Nx / 2) * dx
-    k1 = (2 * np.pi * 0.5) ** 2 / g
-    sy = (0.15 * np.sin(2 * np.pi * 0.12 * t))[:, None, None] * np.ones((T, Ny, Nx))
-    sy = sy + 0.05 * np.cos(k1 * x[None, None, :] - 2 * np.pi * 0.5 * t[:, None, None])
-    sx = np.zeros((T, Ny, Nx))
-    common = dict(dx=dx, fs=fs, water_depth_m=100.0, downsample=2,
-                  long_wave=True, short_wave=False,
-                  aperture_diameters_m=[1.0, 0.4], verbose=False)
-    _, el_plain, _, _, d0 = reconstruct_eta_field(sx, sy, **common)
-    _, el_rec, _, _, d1 = reconstruct_eta_field(sx, sy, recolor_direct=True, **common)
-    assert d0["recolor_direct"] is False and d0["eta_long_krog"] is None
-    assert d1["recolor_direct"] is True and d1["eta_long_krog"] is not None
-    assert np.isfinite(el_rec).all() and el_rec.std() > 0
-    assert not np.allclose(el_rec, el_plain, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -653,9 +294,9 @@ def test_diag_contains_expected_keys(single_mode_slope_stack):
         slope_x, slope_y, dx=p["dx"], fs=p["fs"],
         water_depth_m=100.0, downsample=2, verbose=False,
     )
-    expected = {"sx_mean", "sy_mean", "Wsx", "Wsy", "W_eta",
-                "cos_th", "sin_th", "k_disp", "x_ds", "y_ds",
-                "spatial_W", "temporal_W"}
+    expected = {"long_wave", "long_wave_method", "sx_mean", "sy_mean",
+                "x_ds", "y_ds", "dx_ds", "spatial_W", "temporal_W",
+                "aperture_mask", "aperture_diameter_m"}
     missing = expected - set(diag.keys())
     assert not missing, f"diag is missing keys: {missing}"
 
@@ -683,7 +324,6 @@ def test_long_wave_false_zeroes_eta_long_and_skips_cwt():
     assert np.allclose(eta_long, 0.0)
     assert np.allclose(eta_xyt, eta_short)          # field reduces to short path
     assert diag["long_wave"] is False
-    assert diag["Wsx"] is None and diag["W_eta"] is None  # CWT not run
 
 
 def test_long_wave_true_recovers_swell():
@@ -692,7 +332,7 @@ def test_long_wave_true_recovers_swell():
         sx, sy, dx=0.05, fs=fs, water_depth_m=100.0,
         downsample=2, long_wave=True, verbose=False)
     assert diag["long_wave"] is True
-    assert diag["Wsx"] is not None
+    assert diag["long_wave_method"] == "fourier"
     # Single-mode swell, std ~ A/sqrt(2) ~ 0.21 m. The CWT round-trip and
     # cone-of-influence edges make the exact amplitude record-length-dependent,
     # so assert only order-of-magnitude recovery, not a tight match.
@@ -1020,82 +660,6 @@ def test_short_wave_false_skips_field_returns_none():
 # single-band inverse, recolor band ceiling.
 # ---------------------------------------------------------------------------
 
-def _krogstad_series(sx, sy, fs, T, freqs=None, depth=100.0):
-    """slope series -> eta_long via the full calibrated chain."""
-    import warnings as _w
-    from eta_field_recon.wavelet_core import (
-        _cwt, _inverse_cwt, krogstad_eta_coeffs, skirt_correction)
-    from eta_field_recon.recon import _make_temporal_window
-
-    if freqs is None:
-        freqs = np.linspace(0.05, 2.0, 80)
-    win = _make_temporal_window(T, "tukey", 0.25)
-    Wsx = _cwt(sx * win, freqs, fs, None).values
-    Wsy = _cwt(sy * win, freqs, fs, None).values
-    _, k = lindisp_with_current(2 * np.pi * freqs, depth, 0.0)
-    with _w.catch_warnings():
-        _w.simplefilter("ignore", UserWarning)
-        sg = skirt_correction(freqs, fs, k, T, None, per_scale=True)
-        W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k, skirt_gain=sg)
-        return np.real(_inverse_cwt(W_eta, freqs, fs, None, per_scale=True))
-
-
-def test_opposing_systems_keep_their_own_signs():
-    """Two near-axis systems traveling in OPPOSITE along-look directions at
-    different frequencies must both reconstruct upright. A global band sign
-    inverted the weaker system (per-band r = -1) while preserving Hs."""
-    fs, T, g = 10.0, 2048, 9.806
-    t = np.arange(T) / fs
-    systems = [(0.10, 0.4, np.deg2rad(80.0)), (0.30, 0.2, np.deg2rad(280.0))]
-    sx = np.zeros(T)
-    sy = np.zeros(T)
-    for f0, A, th in systems:
-        k0 = (2 * np.pi * f0) ** 2 / g
-        sx += A * k0 * np.cos(th) * np.sin(2 * np.pi * f0 * t)
-        sy += A * k0 * np.sin(th) * np.sin(2 * np.pi * f0 * t)
-    rec = _krogstad_series(sx, sy, fs, T)
-    m = slice(T // 4, 3 * T // 4)
-    F = np.fft.rfft(rec[m])
-    fr = np.fft.rfftfreq(rec[m].size, 1 / fs)
-
-    def band(lo, hi):
-        G = F.copy()
-        G[(fr < lo) | (fr > hi)] = 0
-        return np.fft.irfft(G, n=rec[m].size)
-
-    r1 = np.corrcoef(band(0.05, 0.2), 0.4 * np.cos(2 * np.pi * 0.10 * t[m]))[0, 1]
-    r2 = np.corrcoef(band(0.2, 0.45), 0.2 * np.cos(2 * np.pi * 0.30 * t[m]))[0, 1]
-    assert r1 > 0.95, f"low-frequency system inverted/degraded: r={r1:.3f}"
-    assert r2 > 0.95, f"high-frequency system inverted/degraded: r={r2:.3f}"
-
-
-def test_crossover_ignores_band_edges():
-    """Edge samples must not win the crossover search: zero-padded smoothing
-    used to bias the first/last ratio samples low, so a flat-plateau ratio
-    with a genuine interior minimum returned the grid edge."""
-    from eta_field_recon.wavelet_core import aperture_crossover_frequency
-
-    freqs = np.linspace(0.05, 2.0, 80)
-    ratio = np.full(80, 1.7)
-    i0 = int(np.argmin(np.abs(freqs - 0.5)))
-    ratio[i0] = 1.2
-    fx = aperture_crossover_frequency(ratio, np.ones(80), freqs, band=None)
-    assert abs(fx - 0.5) < 0.1, f"crossover steered to {fx} Hz, not ~0.5"
-
-
-def test_crossover_nan_and_empty_band():
-    from eta_field_recon.wavelet_core import aperture_crossover_frequency
-
-    freqs = np.linspace(0.05, 2.0, 80)
-    ratio = np.full(80, 1.7)
-    ratio[40] = 1.2
-    ratio[10] = np.nan                       # must not win via NaN argmin
-    fx = aperture_crossover_frequency(ratio, np.ones(80), freqs, band=None)
-    assert np.isfinite(fx) and abs(fx - freqs[40]) < 0.1
-    with pytest.raises(ValueError):
-        aperture_crossover_frequency(ratio, np.ones(80), freqs, band=(5.0, 6.0))
-
-
 def test_aperture_transfer_nan_k_passthrough():
     """NaN wavenumber (blocked frequency) must yield NaN transfer and NaN
     gain, not a silently plausible H = 1."""
@@ -1121,28 +685,6 @@ def test_empty_aperture_mask_raises():
         _circular_aperture_mask(24, 24, dx=0.1, diameter_m=0.05)
 
 
-def test_skirt_correction_nan_not_clamped():
-    """Uncalibratable skirt bands must come back NaN (with a warning), not
-    silently interpolated and clamped; NaN bands are dropped at application."""
-    import warnings as _w
-    from eta_field_recon.wavelet_core import skirt_correction, krogstad_eta_coeffs
-
-    fs, T = 4.0, 128                          # short record: low bands fail COI
-    freqs = np.linspace(0.05, 1.5, 40)
-    _, k = lindisp_with_current(2 * np.pi * freqs, 100.0, 0.0)
-    with _w.catch_warnings(record=True) as rec:
-        _w.simplefilter("always")
-        sg = skirt_correction(freqs, fs, k, T, None, per_scale=True)
-    assert np.isnan(sg).any(), "expected NaN for COI-blocked low bands"
-    assert any("uncalibratable" in str(w.message) for w in rec)
-    # NaN gain drops the band instead of poisoning the coefficients
-    Wsx = np.ones((freqs.size, T), dtype=complex)
-    Wsy = np.zeros_like(Wsx)
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k, skirt_gain=sg)
-    assert np.isfinite(W_eta).all()
-    assert (W_eta[np.isnan(sg)] == 0).all()
-
-
 def test_inverse_cwt_single_band_returns_zeros():
     import warnings as _w
     from eta_field_recon.wavelet_core import _inverse_cwt
@@ -1156,29 +698,3 @@ def test_inverse_cwt_single_band_returns_zeros():
     assert out2.shape == (128,) and np.all(out2 == 0)
 
 
-def test_recolor_band_ceiling_and_window():
-    """Recolor must not deposit amplitude above fmax (where the carrier phase
-    is undefined), and the windowed amplitude estimate stays calibrated."""
-    from eta_field_recon.wavelet_core import recolor_to_direct_spectrum
-
-    fs, T, g = 10.0, 2048, 9.806
-    t = np.arange(T) / fs
-    f0, A = 0.2, 0.4
-    k0 = (2 * np.pi * f0) ** 2 / g
-    eta_krog = A * np.cos(2 * np.pi * f0 * t)
-    sx = A * k0 * np.sin(2 * np.pi * f0 * t)
-    # add a strong out-of-band tone in the slopes
-    f_hi = 3.0
-    k_hi = (2 * np.pi * f_hi) ** 2 / g
-    sx_hi = sx + 0.4 * k_hi * np.sin(2 * np.pi * f_hi * t)
-    eta = recolor_to_direct_spectrum(
-        eta_krog, [(sx_hi, np.zeros(T), None)], fs, 100.0, fmax=2.0)
-    F = np.abs(np.fft.rfft(eta - eta.mean()))
-    fr = np.fft.rfftfreq(T, 1 / fs)
-    in_band = F[(fr > 0.1) & (fr < 0.4)].sum()
-    out_band = F[fr > 2.0].sum()
-    assert out_band < 0.01 * in_band, "energy deposited above the fmax ceiling"
-    # amplitude calibration survives the windowing (compare to truth std)
-    m = slice(T // 4, 3 * T // 4)
-    ratio = eta[m].std() / eta_krog[m].std()
-    assert 0.8 < ratio < 1.25

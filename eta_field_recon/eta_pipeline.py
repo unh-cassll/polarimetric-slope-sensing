@@ -170,9 +170,8 @@ def reconstruct_eta_from_record(
             falls back to reconstruct_eta_field's own default.
         fs_hz : frame rate. If None, taken from the file's `framerate`.
         downsample : spatial subsample factor for the output grid.
-        freqs_cwt : CWT frequency grid (Hz). If None, reconstruct_eta_field's
-            default linspace(0.05, 2.0, 80) is used; the gate keys off its
-            minimum either way.
+        freqs_cwt : frequency grid (Hz) for the long-wave record-length gate
+            (keys off its minimum). If None, linspace(0.05, 2.0, 80) is used.
         min_periods : record must span at least this many periods of the
             lowest CWT frequency for the long-wave path to run. Default 0.5.
         force_long_wave : override the gate. True forces the long-wave path
@@ -511,8 +510,6 @@ def reconstruct_eta_from_record(
     )
     if water_depth_m is not None:
         recon_kwargs["water_depth_m"] = water_depth_m
-    if freqs_cwt is not None:
-        recon_kwargs["freqs_cwt"] = freqs_cwt
 
     eta_xyt, eta_long, eta_short, confidence, diag = reconstruct_eta_field(
         slope_x, slope_y, **recon_kwargs

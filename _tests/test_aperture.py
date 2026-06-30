@@ -17,7 +17,6 @@ from eta_field_recon.recon import (
     _aperture_spatial_mean,
     reconstruct_eta_field,
 )
-from eta_field_recon.wavelet_core import krogstad_eta_coeffs
 
 
 # ---------------------------------------------------------------------------
@@ -167,47 +166,3 @@ def test_reconstruct_aperture_does_not_touch_eta_short():
     assert np.array_equal(eta_short_full, eta_short_disc)
 
 
-# ---------------------------------------------------------------------------
-# krogstad_eta_coeffs (the extracted shared helper)
-# ---------------------------------------------------------------------------
-
-def test_krogstad_shapes_and_finiteness():
-    nf, T = 12, 50
-    rng = np.random.RandomState(2)
-    Wsx = rng.randn(nf, T) + 1j * rng.randn(nf, T)
-    Wsy = rng.randn(nf, T) + 1j * rng.randn(nf, T)
-    k = np.linspace(0.1, 5.0, nf)
-    W_eta, cos_th, sin_th = krogstad_eta_coeffs(Wsx, Wsy, k)
-    assert W_eta.shape == (nf, T)
-    assert cos_th.shape == (nf, T)
-    assert sin_th.shape == (nf, T)
-    assert np.isfinite(W_eta).all()
-    # direction cosines satisfy cos^2 + sin^2 == 1 (up to the eps guard)
-    assert np.allclose(cos_th ** 2 + sin_th ** 2, 1.0, atol=1e-6)
-
-
-def test_krogstad_nonfinite_k_zeroed():
-    # k = NaN (e.g. omega = 0) must yield W_eta = 0 at that frequency, not NaN.
-    nf, T = 4, 10
-    Wsx = np.ones((nf, T), dtype=complex)
-    Wsy = np.ones((nf, T), dtype=complex)
-    k = np.array([np.nan, 1.0, 2.0, np.inf])
-    W_eta, _, _ = krogstad_eta_coeffs(Wsx, Wsy, k)
-    assert np.isfinite(W_eta).all()
-    assert np.all(W_eta[0] == 0.0)   # NaN k -> zeroed
-    assert np.all(W_eta[3] == 0.0)   # inf k -> 1/inf = 0
-
-
-def test_krogstad_sign_guard_keeps_along_look_wave():
-    # A wave traveling exactly along-look has Wsx == 0, so the relative-phase
-    # sign is indeterminate. The guard must keep the along-look magnitude
-    # (default sign +1) rather than zeroing it.
-    nf, T = 3, 8
-    Wsx = np.zeros((nf, T), dtype=complex)
-    Wsy = (1.0 + 0.0j) * np.ones((nf, T))
-    k = np.full(nf, 2.0)
-    W_eta, cos_th, sin_th = krogstad_eta_coeffs(Wsx, Wsy, k)
-    # sin_th should be +1 (kept), not 0 (destroyed)
-    assert np.allclose(sin_th, 1.0)
-    assert np.allclose(cos_th, 0.0)
-    assert not np.allclose(W_eta, 0.0)

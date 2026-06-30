@@ -38,9 +38,7 @@ from .recon import (reconstruct_eta_field, long_wave_gate,
                     invert_mean_slope_series,
                     fourier_slope_projection, wavelet_slope_projection)
 from .wavelet_core import (lindisp_with_current, aperture_transfer_function,
-                           aperture_transfer_gain, directional_spread,
-                           spread_hs_factor, aperture_crossover_frequency,
-                           blend_aperture_coeffs, recolor_to_direct_spectrum)
+                           aperture_transfer_gain)
 from .orthorectify import orthorectify_static, OrthoResult, OrthoPlan, build_ortho_plan
 from .eta_pipeline import PipelineResult, reconstruct_eta_from_record
 
@@ -59,9 +57,4 @@ __all__ = [
     "lindisp_with_current",
     "aperture_transfer_function",
     "aperture_transfer_gain",
-    "directional_spread",
-    "spread_hs_factor",
-    "aperture_crossover_frequency",
-    "blend_aperture_coeffs",
-    "recolor_to_direct_spectrum",
 ]

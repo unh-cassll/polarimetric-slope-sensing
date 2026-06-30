@@ -265,15 +265,14 @@ def piermont_narrow_stack_path(*, allow_download: bool = True) -> Path:
 
 
 def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = True,
-                         inverse_per_scale: bool = False,
-                         skirt_correct: bool = False):
+                         long_wave_method: str = 'fourier'):
     """Mean-wave (long-wave) elevation time series eta_long(t).
 
     Loads the committed spatial-mean slope series (sx_mean(t), sy_mean(t),
     orthorectified) from asit2019_mean_slope_60s.nc and runs the long-wave
-    inversion live -- the same CWT -> Krogstad signed direction -> dispersion
-    projection -> inverse-CWT used inside reconstruct_eta_field, here exercised
-    on the real 60 s ASIT record without needing the 10 GB stack.
+    slope projection live -- the same directionally-complete amplitude + signed
+    direction projection used inside reconstruct_eta_field, here exercised on the
+    real 60 s ASIT record without needing the 10 GB stack.
 
     Returns:
         (t, eta_long) : time vector (s) and mean-wave elevation (m), both 1-D.
@@ -301,5 +300,5 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
 
     eta_long = invert_mean_slope_series(
         sx_mean, sy_mean, fs, water_depth_m=depth,
-        inverse_per_scale=inverse_per_scale, skirt_correct=skirt_correct)
+        long_wave_method=long_wave_method)
     return t, eta_long
