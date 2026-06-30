@@ -35,7 +35,8 @@ ideas for extensions.
 """
 
 from .recon import (reconstruct_eta_field, long_wave_gate,
-                    invert_mean_slope_series)
+                    invert_mean_slope_series,
+                    fourier_slope_projection, wavelet_slope_projection)
 from .wavelet_core import (lindisp_with_current, aperture_transfer_function,
                            aperture_transfer_gain, directional_spread,
                            spread_hs_factor, aperture_crossover_frequency,
@@ -47,6 +48,8 @@ __all__ = [
     "reconstruct_eta_field",
     "long_wave_gate",
     "invert_mean_slope_series",
+    "fourier_slope_projection",
+    "wavelet_slope_projection",
     "reconstruct_eta_from_record",
     "PipelineResult",
     "orthorectify_static",

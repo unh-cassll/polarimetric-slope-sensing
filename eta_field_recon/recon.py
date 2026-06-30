@@ -47,6 +47,7 @@ module passes copies to be safe; do the same if calling g2s elsewhere.
 """
 import numpy as np
 from pyGrad2Surf.g2s import g2s
+from scipy.signal import detrend
 from scipy.signal.windows import tukey, hann
 from ewdm.wavelets import Morlet
 
@@ -184,6 +185,103 @@ def _aperture_spatial_mean(field_stack, mask):
     m = mask[None, :, :]
     n = float(mask.sum())
     return (field_stack * m).sum(axis=(1, 2)) / n
+
+
+def _direct_complete_amplitude(sx_mean, sy_mean, fs, depth, diameter_m, jinc=True,
+                               hp_fmin=0.08, hp_width_oct=0.25, temporal_alpha=0.25):
+    """rfft-grid directionally-complete long-wave amplitude A(f)=sqrt(|Sx|^2+|Sy|^2)/k
+    (Phillips 1977), jinc aperture-corrected and logistic high-passed. Returns
+    (A, Sx, Sy, T); Sx, Sy are the windowed disc-mean slope rffts. Shared by the
+    fourier and wavelet slope projections below."""
+    sE = detrend(np.asarray(sx_mean, float))
+    sN = detrend(np.asarray(sy_mean, float))
+    T = sE.size
+    win = tukey(T, temporal_alpha)
+    wn = np.sqrt(np.mean(win ** 2))
+    f = np.fft.rfftfreq(T, 1.0 / fs)
+    _, k = lindisp_with_current(2 * np.pi * f, depth, 0.0)
+    k = np.asarray(k, float)
+    Sx = np.fft.rfft(sE * win) / wn
+    Sy = np.fft.rfft(sN * win) / wn
+    m = np.sqrt(np.abs(Sx) ** 2 + np.abs(Sy) ** 2) + 1e-30
+    with np.errstate(divide='ignore', invalid='ignore'):
+        A = np.where(np.isfinite(m / k), m / k, 0.0)
+    if jinc and diameter_m is not None:
+        with warnings.catch_warnings():                  # null bands expected
+            warnings.simplefilter('ignore', UserWarning)
+            g = aperture_transfer_gain(f, k, diameter_m, shape='circular', min_transfer=0.3)
+        A = A * np.where(np.isfinite(g), g, 0.0)
+    with np.errstate(divide='ignore'):
+        lr = (np.log2(np.maximum(f, 1e-12)) - np.log2(hp_fmin)) / hp_width_oct
+    A = A * np.clip(1.0 / (1.0 + np.exp(-lr)), 0.0, 1.0)
+    return A, Sx, Sy, T
+
+
+def _aperture_disc(slope_x_field, slope_y_field, dx, aperture_diameter_m):
+    """Disc-mean slope series and the disc's physical diameter (full frame if None)."""
+    Ny, Nx = slope_x_field.shape[1:]
+    mask = _circular_aperture_mask(Ny, Nx, dx, aperture_diameter_m)
+    sxm = _aperture_spatial_mean(slope_x_field, mask)
+    sym = _aperture_spatial_mean(slope_y_field, mask)
+    diam = (aperture_diameter_m if aperture_diameter_m is not None
+            else float(np.sqrt(Ny * Nx)) * dx)
+    return sxm, sym, diam
+
+
+def fourier_slope_projection(slope_x_field, slope_y_field, dx, fs, depth,
+                             aperture_diameter_m=None, jinc=True, hp_fmin=0.08,
+                             hp_width_oct=0.25, temporal_alpha=0.25):
+    """Long-wave eta(t) by per-frequency signed slope projection.
+
+    Disc-mean slope rffts. Per frequency: direction cos=|Sx|/m, sin=(|Sy|/m)*
+    sign(Re(Sy conj Sx)) (180-deg ambiguity from the channels' relative phase); the
+    projection carries only the phase, the directionally-complete direct amplitude the
+    magnitude: eta = irfft(A * exp(i*angle(+1j*(cos*Sx + sin*Sy)))). The Fourier-
+    amplitude form of the directional estimator of Krogstad, Magnusson & Donelan
+    (2006). slope_*_field are (T, Ny, Nx); aperture_diameter_m None = full frame."""
+    sxm, sym, diam = _aperture_disc(slope_x_field, slope_y_field, dx, aperture_diameter_m)
+    A, Sx, Sy, T = _direct_complete_amplitude(sxm, sym, fs, depth, diam, jinc,
+                                              hp_fmin, hp_width_oct, temporal_alpha)
+    m = np.sqrt(np.abs(Sx) ** 2 + np.abs(Sy) ** 2) + 1e-30
+    rel = np.sign(np.real(Sy * np.conj(Sx)))
+    rel = np.where(rel == 0, 1.0, rel)
+    carrier = 1j * ((np.abs(Sx) / m) * Sx + (np.abs(Sy) / m) * rel * Sy)
+    eta = np.fft.irfft(A * np.exp(1j * np.angle(carrier)), n=T)
+    return eta - eta.mean()
+
+
+def wavelet_slope_projection(slope_x_field, slope_y_field, dx, fs, depth,
+                             aperture_diameter_m=None, jinc=True, hp_fmin=0.08,
+                             hp_width_oct=0.25, temporal_alpha=0.25, mother=None):
+    """Long-wave eta(t): wavelet (CWT) signed slope projection for the phase, with the
+    same directionally-complete direct amplitude as fourier_slope_projection.
+
+    Disc-mean slopes -> Morlet CWT. Per (f, t): cos=|Wsx|/m, sin=(|Wsy|/m)*
+    sign(Re(Wsy conj Wsx)); Weta = +1j*(cos*Wsx + sin*Wsy)/k(f), logistic high-passed;
+    eta_krog = Re(iCWT). The amplitude is then imposed from the direct slope spectrum so
+    the wavelet carries only the phase. The directional estimator of Krogstad, Magnusson
+    & Donelan (2006), reduced to the bare per-(f,t) projection (no skirt correction, no
+    aperture blend). slope_*_field are (T, Ny, Nx); aperture_diameter_m None = full frame."""
+    sxm, sym, diam = _aperture_disc(slope_x_field, slope_y_field, dx, aperture_diameter_m)
+    A, _, _, T = _direct_complete_amplitude(sxm, sym, fs, depth, diam, jinc,
+                                            hp_fmin, hp_width_oct, temporal_alpha)
+    fcwt = np.linspace(0.05, 2.0, 80)
+    win = tukey(T, temporal_alpha)
+    Wsx = _cwt(detrend(sxm) * win, fcwt, fs, mother).values
+    Wsy = _cwt(detrend(sym) * win, fcwt, fs, mother).values
+    _, kc = lindisp_with_current(2 * np.pi * fcwt, depth, 0.0)
+    kc = np.asarray(kc, float)
+    m = np.sqrt(np.abs(Wsx) ** 2 + np.abs(Wsy) ** 2) + 1e-30
+    rel = np.sign(np.real(Wsy * np.conj(Wsx)))
+    rel = np.where(rel == 0, 1.0, rel)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        Weta = 1j * ((np.abs(Wsx) / m) * Wsx + (np.abs(Wsy) / m) * rel * Wsy) / kc[:, None]
+    Weta = np.where(np.isfinite(Weta), Weta, 0.0)
+    bp = 1.0 / (1.0 + np.exp(-(np.log2(fcwt) - np.log2(hp_fmin)) / hp_width_oct))
+    eta_krog = np.real(_inverse_cwt(Weta * bp[:, None], fcwt, fs, mother, per_scale=True))
+    phase = np.angle(np.fft.rfft(eta_krog - eta_krog.mean()))
+    eta = np.fft.irfft(A * np.exp(1j * phase), n=T)
+    return eta - eta.mean()
 
 
 def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
