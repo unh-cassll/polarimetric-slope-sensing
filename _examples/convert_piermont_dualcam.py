@@ -189,9 +189,10 @@ def write_narrow(datadir, outdir, band_cols):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--datadir",
-                    default="/home/nathanlaxague/Dropbox/Professional/MATLAB/"
-                            "polarimetry/Piermont2025")
+    ap.add_argument("--datadir", required=True,
+                    help="directory holding the Piermont 2025 v7.3 .mat "
+                         "mean-frame structs (developer one-shot; the "
+                         "converted artifacts are already committed)")
     ap.add_argument("--outdir", default=os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "_data"))
     ap.add_argument("--band-cols", type=int, default=128,

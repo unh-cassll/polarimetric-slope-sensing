@@ -18,13 +18,13 @@ surface), so it falls back to no gain.
 
 Run from the repository root:
 
-    python examples/load_and_reduce.py
-    python examples/load_and_reduce.py examples/asit_2019_raw_pol_frame0001.nc
-    python examples/load_and_reduce.py --median examples/asit_2019_raw_pol_median.nc
-    python examples/load_and_reduce.py --save out.png --no-show
+    python _examples/load_and_reduce.py
+    python _examples/load_and_reduce.py _data/asit_2019_raw_pol_frame0001.nc
+    python _examples/load_and_reduce.py --median _data/asit_2019_raw_pol_median.nc
+    python _examples/load_and_reduce.py --save out.png --no-show
 
-Example data ships with the repository (examples/*.nc) and will eventually be
-mirrored in a Zenodo archive; see examples/_data.py.
+Example data downloads from Zenodo on first use and caches in _data/
+(md5-verified); see the _data package.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import argparse
 import sys
 from pathlib import Path
 
-# Allow running from either the repo root or from within examples/.
+# Allow running from either the repo root or from within _examples/.
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 if str(_REPO_ROOT) not in sys.path:

@@ -9,13 +9,13 @@ time series are distributed via a Zenodo archive (see the _data package).
 A typical workflow:
 
     from pss import read_netcdf_frame, compute_slope_field
-    frame, meta = read_netcdf_frame("asit_example.nc")
+    frame, meta = read_netcdf_frame("asit_example.nc")   # meta: FrameMetadata
     result = compute_slope_field(
         frame,
-        method=meta["method"],
-        gain_mode=meta["gain_mode"],
-        theta_i_mean_deg=meta["theta_i_mean_deg"],
-        n_water=meta["n_water"],
+        method=meta.method,
+        gain_mode=meta.gain_mode,
+        theta_i_mean_deg=meta.theta_i_mean_deg,
+        n_water=meta.n_water,
     )
 
 The reader is intentionally permissive about which attributes are present so

@@ -21,9 +21,10 @@ hand is used as-is if the checksum matches.)
 
 What IS committed is a small derived artifact, asit2019_mean_slope_60s.nc,
 holding the spatial-mean slope time series sx_mean(t), sy_mean(t) for the full
-60 s record (1-D, a few KB). It is produced once by _tools/precompute_mean_wave.py
-and lets mean_wave_timeseries() reconstruct the long-wave elevation eta_long(t)
-live, offline, without the 10 GB download. See mean_wave_timeseries() below.
+60 s record (1-D, a few KB), precomputed once from the full stack (reduce each
+frame with pss.compute_slope_field, average spatially). It lets
+mean_wave_timeseries() reconstruct the long-wave elevation eta_long(t) live,
+offline, without the 10 GB download. See mean_wave_timeseries() below.
 """
 from __future__ import annotations
 
@@ -60,7 +61,7 @@ _MD5 = {
     STACK_FULL_FILENAME: "9974f2b354f7517652d003cb5aef13fa",
 }
 
-# Committed derived artifact (produced by _tools/precompute_mean_wave.py).
+# Committed derived artifact (precomputed spatial-mean slope series).
 MEAN_SLOPE_FILENAME = "asit2019_mean_slope_60s.nc"
 
 # Committed independent-validation artifact: Riegl LD90-3 water-surface
@@ -180,15 +181,18 @@ def mean_slope_path() -> Path:
     """Local path to the committed spatial-mean slope artifact.
 
     This is a small derived file, committed to the repository (not on Zenodo).
-    If it is missing, it must be regenerated with _tools/precompute_mean_wave.py.
+    If it is missing, restore it from git or regenerate it from the full stack
+    (reduce every frame with pss.compute_slope_field, average spatially, save
+    sx_mean/sy_mean plus the framerate).
     """
     path = EXAMPLES_DIR / MEAN_SLOPE_FILENAME
     if not path.exists():
         raise FileNotFoundError(
-            f"{MEAN_SLOPE_FILENAME} not found in {EXAMPLES_DIR}. It is the "
-            f"committed spatial-mean slope series; regenerate it once with:\n"
-            f"    python _tools/precompute_mean_wave.py --input <60s_stack.nc>\n"
-            f"(see that script's header for details)."
+            f"{MEAN_SLOPE_FILENAME} not found in {EXAMPLES_DIR}. It is a "
+            f"committed artifact: restore it with `git checkout -- "
+            f"_data/{MEAN_SLOPE_FILENAME}`, or regenerate it from the full "
+            f"stack (reduce each frame with pss.compute_slope_field, average "
+            f"spatially, save sx_mean/sy_mean and the framerate)."
         )
     return path
 

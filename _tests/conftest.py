@@ -50,6 +50,18 @@ def _resolve_local_or_skip(getter_name: str) -> Path:
         )
 
 
+@pytest.fixture(autouse=True)
+def _restore_superpixel_layout():
+    """Snapshot/restore pss.stokes._OFFSETS around every test.
+
+    apply_layout_from_meta rebinds the module-global layout for the whole
+    session; without a teardown, a test loading a non-default-layout file
+    would leak that layout into later tests (ordering hazard)."""
+    saved = dict(_stokes._OFFSETS)
+    yield
+    _stokes._OFFSETS = saved
+
+
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent

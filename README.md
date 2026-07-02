@@ -81,10 +81,13 @@ res = run_epss(
     water_depth_m=15.0,           # optional
     aperture_diameter_m=1.2,      # optional: circular slope-averaging aperture
     downsample=8,
+    short_wave=True,              # opt into the resolved eta_short/eta_xyt field
 )
 res.eta_xyt, res.eta_long, res.eta_short, res.confidence   # elevation fields
 res.ortho.dx_m                    # the true ground dx, derived from the optics
 ```
+
+`short_wave` defaults to `False` on all three entry points: the cheap path skips the per-frame g2s integration and returns `eta_long` only (`eta_xyt` and `eta_short` are `None`). Pass `short_wave=True` when you need the spatially resolved field.
 
 The three *geometry* parameters (`freeboard_m`, `pixel_pitch_m`, `focal_length_m`) are **all-or-nothing**: pass one without the others and it raises an error. The η stage needs those three **plus** `theta_i_mean_deg` **plus** `fs`. By contrast `theta_i_mean_deg` and `fs` may each be supplied on their own (they enable the Tier-1 gain path), so they are deliberately *not* part of the all-or-nothing geometry set. The long-wave (mean-wave) inversion is itself gated on record length — see below.
 
@@ -107,6 +110,7 @@ res = run_epss_from_slopes(
     dx_m=0.05,                    # the uniform ground pixel size you set
     fs=10.0,                      # frame rate (Hz)
     aperture_diameter_m=1.2,      # optional
+    short_wave=True,              # optional: resolved eta_xyt (default False)
 )
 res.eta_xyt, res.eta_long, res.long_wave_ran
 ```
@@ -126,6 +130,7 @@ res = reconstruct_eta_from_record(
     gain_reference_path="my_median.nc",      # empirical-gain reference
     aperture_diameter_m=1.2,                 # optional
     downsample=8,
+    short_wave=True,                         # optional: resolved eta_xyt (default False)
 )
 res.eta_xyt, res.eta_long, res.long_wave_ran, res.ortho.dx_m
 ```
@@ -140,7 +145,7 @@ For a record, the expensive part of orthorectification — the Delaunay triangul
 
 ### Record-length gate on the long-wave inversion
 
-The long-wave path (the mean-wave elevation time series `eta_long(t)`) requires the record to span enough time to resolve the lowest wave frequency. The gate is physics-based: the record must cover at least `min_periods` periods of the lowest CWT frequency (default 0.5 periods of 0.05 Hz, i.e. ~10 s). Shorter records skip the long-wave inversion entirely (`eta_long = 0`, `eta_xyt = eta_short`) and save the CWT cost. Override with `force_long_wave`.
+The long-wave path (the mean-wave elevation time series `eta_long(t)`) requires the record to span enough time to resolve the lowest wave frequency. The gate is physics-based: the record must cover at least `min_periods` periods of the lowest CWT frequency (default 0.5 periods of 0.05 Hz, i.e. ~10 s). Shorter records skip the long-wave inversion entirely (`eta_long = 0`, and `eta_xyt == eta_short` when `short_wave=True`). Override with `force_long_wave`.
 
 ## pss — Quick start
 
@@ -151,9 +156,7 @@ pip install -e .
 python _examples/load_and_reduce.py            # reduces the bundled example frame
 ```
 
-…produces a 2×2 panel showing the gain-corrected Stokes components and the along-look / cross-look slope fields, reproducing the canonical example:
-
-![Example output: gain-corrected Stokes parameters and slope fields from a 2056×2464 ASIT2019 frame](_figures/example_output.jpg)
+…produces a 2×2 panel showing the gain-corrected Stokes components and the along-look / cross-look slope fields.
 
 The bundled example reduces a single raw frame (resolved by `_data.frame_path()`, Zenodo name `asit_2019_raw_pol_frame0001.nc`) using the E-PSS workflow: the empirical gain is calibrated against the temporal-median background frame (`_data.median_path()`, `asit_2019_raw_pol_median.nc`), never against the frame itself. Run it with the dedicated script:
 
@@ -219,7 +222,7 @@ stack3 = _data.stack_3s_path()    # 505 MB
 full   = _data.stack_full_path()  # 10.1 GB
 ```
 
-The one data file that **is** committed is a small derived artifact, `_data/asit2019_mean_slope_60s.nc` (a few KB): the spatial-mean slope time series `sx_mean(t)`, `sy_mean(t)` for the full 60 s record, produced once by `_tools/precompute_mean_wave.py`. It lets `_data.mean_wave_timeseries()` reconstruct the mean-wave elevation `eta_long(t)` live and offline, without the 10 GB download:
+The one data file that **is** committed is a small derived artifact, `_data/asit2019_mean_slope_60s.nc` (a few KB): the spatial-mean slope time series `sx_mean(t)`, `sy_mean(t)` for the full 60 s record, precomputed once from the full stack (reduce every frame with `pss.compute_slope_field`, then average spatially). It lets `_data.mean_wave_timeseries()` reconstruct the mean-wave elevation `eta_long(t)` live and offline, without the 10 GB download:
 
 ```python
 t, eta_long = _data.mean_wave_timeseries()   # offline; uses the committed series
@@ -273,12 +276,6 @@ polarimetric-slope-sensing/
 │   ├── asit2019_lidar_elevation_10min.nc committed: Riegl LD90-3 elevation (~105 KB)
 │   ├── piermont2025_ldeo_wide_5mm_mean.nc   committed: wide DoLP-AOI cal frame (~0.2 MB)
 │   └── piermont2025_unh_narrow_75mm_stack.nc committed: narrow multi-angle stack (~2 MB)
-├── _figures/
-│   ├── example_output.jpg                rendered output of the pss demo
-│   └── validation_eta_long_vs_lidar.png  eta_long vs lidar validation figure
-├── _tools/
-│   ├── precompute_mean_wave.py           one-off: build the committed mean-slope series
-│   └── validate_eta_long_vs_lidar.py     cross-correlate eta_long vs lidar (lag + figure)
 ├── _tests/                               pytest suite
 │   ├── conftest.py
 │   ├── test_stokes.py
@@ -332,13 +329,16 @@ pip install -e ".[all]"                # everything
 
 Core dependencies are `numpy`, `scipy`, `matplotlib`, and `netCDF4`. If you prefer not to install the package, dependencies can be pulled from `requirements.txt` and the scripts can be run in-place (`python _examples/load_and_reduce.py ...`).
 
-After `pip install -e .`, three console scripts are available on `$PATH`:
+After `pip install -e .` from a clone, four console scripts are available on `$PATH`:
 
 | command                   | source                                      |
 |---------------------------|---------------------------------------------|
 | `pss-load-reduce`         | `_examples/load_and_reduce.py`               |
 | `pss-load-reduce-median`  | `_examples/load_and_reduce_with_median_gain.py` |
+| `pss-skyaware-demo`       | `_examples/skyaware_demo.py`                |
 | `pss-eta-demo`            | `eta_field_recon/demo_eta_field.py`         |
+
+The console scripts need the repository on disk (a clone + editable install): wheel installs — including the no-clone `pip install "git+..."` form above — deliberately exclude `_examples/` and `_data/`, and the scripts raise an actionable error there. The library API (`import pss`, `epss.run_epss`, `eta_field_recon`) works from any install.
 
 ## Running the tests
 
@@ -558,7 +558,7 @@ Returns:
 - `eta_long` — `(T,)` long-wave (spatial-mean) time series (m)
 - `eta_short` — `(T, Ny_d, Nx_d)` zero-mean-per-frame short-wave field (m)
 - `conf` — `(T, Ny_d, Nx_d)` confidence mask on `[0, 1]`
-- `diag` — dict of intermediates (CWT coefficients, windows, the directional-spread moment `r2`, the `hs_spread_factor` Hₛ correction, etc.)
+- `diag` — dict of intermediates (disc-mean slope series, spatial/temporal windows, aperture mask, coordinate vectors, pad sizes)
 
 ### Method, briefly
 
@@ -566,7 +566,7 @@ Two paths, summed:
 
 1. **Short-wave path** (per-frame Harker-O'Leary least-squares spatial integration via `pyGrad2Surf.g2s`). Recovers the wave SHAPE inside the frame; sets the spatial mean to zero per frame by construction.
 
-2. **Long-wave path** (continuous-wavelet transform of the spatial-mean slope, Krogstad signed-direction estimator per `(f, t)`, dispersion-relation projection, inverse CWT). Recovers the elevation time series the spatial integration loses.
+2. **Long-wave path** (directionally-complete signed slope projection of the disc-mean slope — `fourier_slope_projection` by default, or `wavelet_slope_projection`, which takes its phase from a Morlet CWT; both impose the direct amplitude `√(|Sx|²+|Sy|²)/k` via the dispersion relation, after Krogstad, Magnusson & Donelan 2006). Recovers the elevation time series the spatial integration loses.
 
 The two paths are orthogonal — short has zero spatial mean, long has no spatial structure inside the frame — and sum cleanly. For a frame of size L, the crossover frequency where wavelength = L is `f_crossover = √(g / 2πL) ≈ 0.7 Hz at L = 3 m`. Above that, the short path dominates; below it, the long path dominates.
 
@@ -576,17 +576,16 @@ See [`eta_field_recon/README.md`](eta_field_recon/README.md) for the API referen
 
 The long-wave path carries guards so its sign and amplitude hold across configurations, not just the defaults:
 
-- **Signed amplitude calibration.** The per-frequency reconstruction gain is fit by signed projection, and the Torrence-Compo `cdelta` constant (which `ewdm` tabulates only for `Morlet(6)`) is sanitized, so the surface reconstructs *upright* for any mother wavelet ω₀. Without this, a non-default ω₀ inverts `eta(t)` while leaving the spectrum and Hₛ unchanged.
-- **Cone-of-influence guard.** A frequency band whose wavelet e-folding time exceeds a fraction of the record (or whose calibration gain falls out of range) comes back as `NaN` with a warning and is dropped from the inverse, rather than being silently clamped to a plausible-looking value.
-- **Band-locked direction sign.** Where one slope channel carries the whole wave (a swell along the look axis, ~90°/270°), the per-`(f, t)` propagation sign is set by noise; locking it to the band-dominant direction — chosen per frequency by phase coherence, so opposing systems at different frequencies keep their own directions — removes the ~20% Hₛ dip that otherwise appears on those headings while leaving off-axis seas untouched.
-- **Directional-spreading correction.** The single-direction projection discards off-axis variance, so Hₛ runs low for broad seas. The second directional moment `r2` and a spread-dependent correction factor are reported in `diag` (`directional_spread`, `spread_hs_factor`); applying the factor brings Hₛ to within ~3% of truth across typical spreads, mother-agnostically.
+- **Directionally-complete amplitude.** The reconstruction amplitude comes from the direct slope spectrum `√(|Sx|²+|Sy|²)/k` (both slope components, all directions), so it is insensitive to the 180° direction ambiguity of the signed projection — the projection carries only the phase.
+- **Sanitized wavelet calibration** (wavelet method). The Torrence-Compo `cdelta` constant (which `ewdm` tabulates only for `Morlet(6)`) is sanitized with a sign-safe fallback and a warning for other mother wavelets, so the surface reconstructs *upright* for any ω₀.
+- **Cone-of-influence guard** (wavelet method). A frequency band whose wavelet e-folding time exceeds a fraction of the record (or whose calibration gain falls out of range) comes back as `NaN` with a warning and is dropped from the inverse, rather than being silently clamped to a plausible-looking value.
 - **Opposing-current dispersion.** Under a strong opposing current the dispersion relation ω(k) becomes non-monotonic (wave blocking); the solver restricts to the physical branch and returns `NaN` above the blocking frequency instead of interpolating across a non-monotonic curve.
 
 ### Validation against an independent lidar
 
-The long-wave reconstruction has been checked against an independent near-infrared laser altimeter (Riegl LD90-3) over the same ASIT2019 period. Both instruments share an acquisition start of 2019-10-31 16:00:00 UTC: the lidar runs the full 10 min, while the example PSS record is the 60 s excerpt beginning at frame 7001 — i.e. ~233 s into the acquisition at 30 fps. `_tools/validate_eta_long_vs_lidar.py` reconstructs `eta_long(t)` from the committed slope series and cross-correlates it against the lidar (band-limited to 0.05–0.5 Hz), anchored at that ~233 s offset. The lidar spot and the PSS footprint are ~20 m apart, so the same swell reaches them a few seconds apart; at the deep-water celerity near the 0.17 Hz peak (`c = g/2πf ≈ 8.8 m/s`) that is a ~2 s lag, and the measured propagation lag is ~2.4 s, consistent with the geometry. Over the 60 s window the waveform correlation is r ≈ 0.75 (band-passed std 36 cm vs 45 cm), and the elevation spectra overlap through the energetic wave band (matched peak near 0.17 Hz). This comparison is sign-sensitive — spectra and Hₘ₀ are blind to a global sign flip — and confirms `eta_long` is up-positive.
+The long-wave reconstruction has been checked against an independent near-infrared laser altimeter (Riegl LD90-3) over the same ASIT2019 period. Both instruments share an acquisition start of 2019-10-31 16:00:00 UTC: the lidar runs the full 10 min, while the example PSS record is the 60 s excerpt beginning at frame 7001 — i.e. ~233 s into the acquisition at 30 fps. The validation reconstructs `eta_long(t)` from the committed slope series (`_data.mean_wave_timeseries()`) and cross-correlates it against the lidar (`_data.lidar_elevation()`, band-limited to 0.05–0.5 Hz), anchored at that ~233 s offset. The lidar spot and the PSS footprint are ~20 m apart, so the same swell reaches them a few seconds apart; at the deep-water celerity near the 0.17 Hz peak (`c = g/2πf ≈ 8.8 m/s`) that is a ~2 s lag, and the measured propagation lag is ~2.4 s, consistent with the geometry. Over the 60 s window the waveform correlation is r ≈ 0.75 (band-passed std 36 cm vs 45 cm), and the elevation spectra overlap through the energetic wave band (matched peak near 0.17 Hz). This comparison is sign-sensitive — spectra and Hₘ₀ are blind to a global sign flip — and confirms `eta_long` is up-positive.
 
-A practical note on the wavelet formulation: because the inversion is a CWT band-limited to roughly [0.05, 2] Hz, the `1/k` dispersion division is never evaluated in the `f → 0` (`k → 0`) regime where it would amplify low-frequency slope noise into spurious elevation. The band floor does implicitly what a direct spectral `1/k` inversion needs explicit low-frequency conditioning to achieve — the inferred elevation spectrum shows no low-frequency blow-up relative to the lidar.
+A practical note on low-frequency conditioning: the `1/k` dispersion division is never evaluated in the `f → 0` (`k → 0`) regime where it would amplify low-frequency slope noise into spurious elevation — the fourier path applies a logistic high-pass (corner `hp_fmin`, default 0.08 Hz) and the wavelet path is additionally band-limited to roughly [0.05, 2] Hz. The inferred elevation spectrum shows no low-frequency blow-up relative to the lidar.
 
 ### Directional spectrum
 

@@ -21,14 +21,14 @@ It exercises:
 
 Run from the repository root:
 
-    python examples/load_and_reduce_with_median_gain.py \
-        examples/asit_2019_raw_pol_frame0001.nc \
-        --median examples/asit_2019_raw_pol_median.nc
+    python _examples/load_and_reduce_with_median_gain.py \
+        _data/asit_2019_raw_pol_frame0001.nc \
+        --median _data/asit_2019_raw_pol_median.nc
 
     # save the figure instead of showing it
-    python examples/load_and_reduce_with_median_gain.py \
-        examples/asit_2019_raw_pol_frame0001.nc \
-        --median examples/asit_2019_raw_pol_median.nc \
+    python _examples/load_and_reduce_with_median_gain.py \
+        _data/asit_2019_raw_pol_frame0001.nc \
+        --median _data/asit_2019_raw_pol_median.nc \
         --save out.png --no-show
 
 Both input files use the NetCDF stack schema with dims (time, x, y); the
@@ -42,7 +42,7 @@ import argparse
 import sys
 from pathlib import Path
 
-# Allow running from either the repo root or from within examples/.
+# Allow running from either the repo root or from within _examples/.
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
