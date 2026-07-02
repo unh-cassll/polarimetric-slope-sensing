@@ -84,8 +84,11 @@ def by_superpixel(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray
     S1 = I0 - I90
     S2 = I45 - I135
     with np.errstate(divide="ignore", invalid="ignore"):
-        s1 = np.where(S0 > 0, S1 / S0, 0.0)
-        s2 = np.where(S0 > 0, S2 / S0, 0.0)
+        # Non-finite or non-positive S0 has no defined polarization state;
+        # propagate NaN (0 would enter downstream DoLP/mss statistics as
+        # spurious flat water).
+        s1 = np.where(S0 > 0, S1 / S0, np.nan)
+        s2 = np.where(S0 > 0, S2 / S0, np.nan)
     return S0, s1, s2
 
 
@@ -129,8 +132,11 @@ def by_bilinear_interpolation(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray
     S1 = I0 - I90
     S2 = I45 - I135
     with np.errstate(divide="ignore", invalid="ignore"):
-        s1 = np.where(S0 > 0, S1 / S0, 0.0)
-        s2 = np.where(S0 > 0, S2 / S0, 0.0)
+        # Non-finite or non-positive S0 has no defined polarization state;
+        # propagate NaN (0 would enter downstream DoLP/mss statistics as
+        # spurious flat water).
+        s1 = np.where(S0 > 0, S1 / S0, np.nan)
+        s2 = np.where(S0 > 0, S2 / S0, np.nan)
     return S0, s1, s2
 
 
@@ -178,8 +184,11 @@ def by_kernel_averaging(
     S1 = I0 - I90
     S2 = I45 - I135
     with np.errstate(divide="ignore", invalid="ignore"):
-        s1 = np.where(S0 > 0, S1 / S0, 0.0)
-        s2 = np.where(S0 > 0, S2 / S0, 0.0)
+        # Non-finite or non-positive S0 has no defined polarization state;
+        # propagate NaN (0 would enter downstream DoLP/mss statistics as
+        # spurious flat water).
+        s1 = np.where(S0 > 0, S1 / S0, np.nan)
+        s2 = np.where(S0 > 0, S2 / S0, np.nan)
     return S0, s1, s2
 
 
@@ -187,6 +196,9 @@ def by_conv_demodulation(
     frame: np.ndarray, **kwargs
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Method 4 of Ratliff, LaCasse & Tyo (Opt. Express 17, 9112, 2009).
+
+    Takes no keyword options (the MATLAB counterpart's '4x4'/'2x2' argument
+    belongs to kernel_averaging); unknown kwargs are rejected loudly.
 
     The largest of the paper's microgrid-specific bilinear interpolators
     (Fig. 3, "Method 4"): a radius-3*sqrt(2)/2 neighborhood of 16 pixels (4 per
@@ -212,13 +224,22 @@ def by_conv_demodulation(
     paper's scheme: a flat field gives DoLP 0, and a synthetic polarization
     field reconstructs DoLP and orientation exactly.
     """
+    if kwargs:
+        raise TypeError(
+            f"by_conv_demodulation takes no keyword options; got "
+            f"{sorted(kwargs)}. The '4x4'/'2x2' kernel choice applies to "
+            f"method='kernel_averaging'."
+        )
     f = np.asarray(frame, dtype=np.float64)
     H, W = f.shape
 
     kernels = _ratliff_method4_kernels()
     pmap = _ratliff_parity_maps(kernels)
 
-    conv = {j: convolve(f, kernels[j], mode="reflect") for j in kernels}
+    # "mirror" (d c b | a b c d) preserves micropolarizer sublattice parity at
+    # the frame edge; "reflect" (d c b a | a b c d) flips parity and mixes
+    # orientations in a ~2-pixel border ring.
+    conv = {j: convolve(f, kernels[j], mode="mirror") for j in kernels}
 
     S0 = np.zeros((H, W))
     S1 = np.zeros((H, W))
@@ -234,8 +255,11 @@ def by_conv_demodulation(
         S2[pr::2, pc::2] = (I45 - I135)[pr::2, pc::2]
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        s1 = np.where(S0 > 0, S1 / S0, 0.0)
-        s2 = np.where(S0 > 0, S2 / S0, 0.0)
+        # Non-finite or non-positive S0 has no defined polarization state;
+        # propagate NaN (0 would enter downstream DoLP/mss statistics as
+        # spurious flat water).
+        s1 = np.where(S0 > 0, S1 / S0, np.nan)
+        s2 = np.where(S0 > 0, S2 / S0, np.nan)
     return S0, s1, s2
 
 

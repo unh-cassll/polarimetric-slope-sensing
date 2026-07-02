@@ -188,9 +188,9 @@ def compute_slope_field(
     # small tilts, mss is numerically close to the tilt-angle variance in
     # rad^2, but the slope variance is the physically standard quantity.
     #
-    # (The original MATLAB driver computed var(atand(Sx)) in deg^2 -- the
-    # variance of the tilt ANGLE, applying atand twice. To recover that:
-    # float(np.nanvar(Ax) + np.nanvar(Ay)).)
+    # (The original MATLAB driver computed var(atand(Ax)) with Ax = atand(Sx):
+    # atand applied twice. nanvar(Ax) + nanvar(Ay) applies atand once and does
+    # not reproduce that number; mss below is the standard slope variance.)
     #
     # mss uses nanvar, which subtracts the mean internally, so it is invariant
     # to the constant camera-tilt offset present in Sx/Sy. nanmean(Sx**2) would

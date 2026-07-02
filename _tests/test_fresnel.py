@@ -60,3 +60,26 @@ def test_dolp_to_aoi_clips_out_of_range():
     out = dolp_to_aoi(np.array([-0.5, 0.0, 0.5, 1.0, 1.5]), DOLP, theta_full)
     assert np.isfinite(out).all()
     assert out.shape == (5,)
+
+
+def test_load_lookup_table_vec_fallback_clamps_low_dolp(tmp_path):
+    """A DOLP_vec/theta_vec .mat whose measured curve starts above DoLP=0 must
+    map low DoLP to the SMALL-angle end, not to the peak (regression: a single
+    nan fill sent near-flat water to Brewster's angle), and must tolerate
+    repeated DoLP samples before the peak."""
+    from scipy.io import savemat
+
+    from pss.fresnel import load_lookup_table
+
+    theta_vec = np.linspace(20.0, 70.0, 40)
+    dolp_vec = fresnel_dolp(theta_vec, n_water=1.34)
+    dolp_vec[5] = dolp_vec[4]          # duplicated sample: must not raise
+    path = tmp_path / "lut.mat"
+    savemat(path, {"DOLP_vec": dolp_vec, "theta_vec": theta_vec})
+
+    DOLP_full, theta_full = load_lookup_table(path)
+    aoi = dolp_to_aoi(np.array([0.001, 0.05, dolp_vec.min()]),
+                      DOLP_full, theta_full)
+    # Everything at/below the measured floor clamps to the smallest measured
+    # angle -- far from the ~53 deg Brewster peak.
+    assert (aoi <= theta_vec[0] + 1.0).all()

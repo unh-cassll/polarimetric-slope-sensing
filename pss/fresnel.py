@@ -160,13 +160,20 @@ def load_lookup_table(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
             dolp_vec = np.asarray(mat["DOLP_vec"]).squeeze()
             theta_vec = np.asarray(mat["theta_vec"]).squeeze()
             i_peak = int(np.argmax(dolp_vec))
+            dl = dolp_vec[: i_peak + 1]
+            th = theta_vec[: i_peak + 1]
+            # PCHIP requires strictly increasing x; drop repeated DoLP samples.
+            keep = np.concatenate([[True], np.diff(dl) > 0])
+            dl, th = dl[keep], th[keep]
             DOLP_full = np.linspace(0.0, 1.0, 10_000)
-            interp = PchipInterpolator(dolp_vec[: i_peak + 1], theta_vec[: i_peak + 1],
-                                       extrapolate=False)
-            theta_full = interp(DOLP_full)
-            theta_full = np.nan_to_num(theta_full, nan=theta_vec[i_peak])
+            theta_full = PchipInterpolator(dl, th, extrapolate=False)(DOLP_full)
+            # Clamp outside the measured DoLP support, both ends separately
+            # (as in lut_from_curve): above the peak -> peak theta; below the
+            # smallest measured DoLP -> its small-angle theta.
+            theta_full = np.where(DOLP_full > dl[-1], th[-1], theta_full)
+            theta_full = np.where(DOLP_full < dl[0], th[0], theta_full)
             theta_full[0] = 0.0
-            return DOLP_full, theta_full
+            return DOLP_full, np.nan_to_num(theta_full, nan=th[-1])
         raise KeyError(
             f"{path}: expected variables 'DOLP_full' and 'theta_full' "
             "(or 'DOLP_vec' and 'theta_vec') in the .mat file"
@@ -180,10 +187,13 @@ def dolp_to_aoi(
 ) -> np.ndarray:
     """Map a DoLP field to angle-of-incidence (degrees) via index lookup.
 
-    Reproduces the MATLAB:
+    Follows the MATLAB scheme:
         DOLP_int = floor(DOLP*10000);
         DOLP_int(DOLP_int<1) = 1; DOLP_int(DOLP_int>10000) = 10000;
         AOI = theta_full(DOLP_int);
+    except that the 0-based index floor(d*n) is used directly (the exact
+    1-based translation would be floor(d*n) - 1); the two differ by one
+    table bin, ~0.005 deg, and this form is the less-biased of the two.
 
     Non-finite DoLP maps to NaN (floor(NaN).astype(int) is undefined and
     would otherwise silently index theta=0).

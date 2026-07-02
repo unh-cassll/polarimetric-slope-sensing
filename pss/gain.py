@@ -54,20 +54,11 @@ class GainResult:
 
 
 def _ideal_dolp_from_theta(theta_deg: float, n_water: float = 1.34) -> float:
-    """DoLP predicted by Fresnel theory for an unpolarized, no-upwelling sky.
+    """DoLP predicted by Fresnel theory for an unpolarized, no-upwelling sky
+    (single source of the closed form: fresnel.fresnel_dolp)."""
+    from .fresnel import fresnel_dolp
 
-    Uses the closed form:
-        DoLP(theta) = 2 sin^2(theta) cos(theta) sqrt(n^2 - sin^2(theta))
-                      / (n^2 - sin^2(theta) - n^2 sin^2(theta) + 2 sin^4(theta))
-    matching the formula in the repo README.
-    """
-    th = np.deg2rad(theta_deg)
-    s, c = np.sin(th), np.cos(th)
-    s2 = s * s
-    n2 = n_water * n_water
-    num = 2.0 * s2 * c * np.sqrt(n2 - s2)
-    den = n2 - s2 - n2 * s2 + 2.0 * s2 * s2
-    return float(num / den)
+    return float(fresnel_dolp(theta_deg, n_water=n_water))
 
 
 def apply_gain(

@@ -101,10 +101,11 @@ def test_slope_fields_preserve_mean_tilt(synthetic_frame):
     result = compute_slope_field(
         frame, method="bilinear", gain_mode="none",
     )
-    # The synthetic frame carries a real mean slope; it must survive (i.e.
-    # NOT be forced to zero as the old per-frame de-mean did).
-    assert np.isfinite(np.nanmean(result.Sx))
-    assert np.isfinite(np.nanmean(result.Sy))
+    # The synthetic frame's 30-deg viewing tilt produces a substantially
+    # nonzero mean slope (~0.38 in Sy for this field); per-frame de-meaning
+    # would force it to ~0, so a small-magnitude mean fails here.
+    mean_mag = float(np.hypot(np.nanmean(result.Sx), np.nanmean(result.Sy)))
+    assert mean_mag > 0.1
     # mss is a variance, so it is unchanged by the presence of the mean.
     assert result.mss == pytest.approx(
         np.nanvar(result.Sx) + np.nanvar(result.Sy), abs=1e-12)
@@ -195,11 +196,12 @@ def test_netcdf_example_full_method4(example_nc_path, median_nc_path):
         gain_reference_frame=median_frame,
     )
     assert result.s1.shape == frame.shape
-    # frame0001, full/Method 4, median-referenced gain, theta_i=30, n=1.34:
-    assert result.gain_g1 == pytest.approx(1.5599, abs=0.001)
-    assert np.median(result.dolp) == pytest.approx(0.3278, abs=0.001)
-    assert np.median(result.aoi_deg) == pytest.approx(25.977, abs=0.01)
-    assert result.mss == pytest.approx(0.021078, abs=1e-5)
+    # frame0001, full/Method 4, median-referenced gain, theta_i=30, n=1.34,
+    # with parity-preserving (mirror) border padding in the demodulation:
+    assert result.gain_g1 == pytest.approx(1.5596, abs=0.001)
+    assert np.median(result.dolp) == pytest.approx(0.3279, abs=0.001)
+    assert np.median(result.aoi_deg) == pytest.approx(25.985, abs=0.01)
+    assert result.mss == pytest.approx(0.021023, abs=1e-5)
 
 
 def test_netcdf_carries_expected_global_attributes(example_nc_path):

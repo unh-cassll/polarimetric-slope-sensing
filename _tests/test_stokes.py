@@ -82,6 +82,49 @@ def test_conv_demodulation_is_ratliff_method4(synthetic_frame):
     assert np.nanmax(dolp) < 1e-9
 
 
+def _uniform_polarized_frame(H=32, W=32, S0=1000.0, dolp=0.4, phi_deg=25.0):
+    """Uniform partially-polarized field sampled on the active DoFP layout."""
+    from pss.stokes import _OFFSETS
+
+    S1 = S0 * dolp * np.cos(np.deg2rad(2 * phi_deg))
+    S2 = S0 * dolp * np.sin(np.deg2rad(2 * phi_deg))
+    intensity = {
+        "I0":   0.5 * (S0 + S1),
+        "I90":  0.5 * (S0 - S1),
+        "I45":  0.5 * (S0 + S2),
+        "I135": 0.5 * (S0 - S2),
+    }
+    frame = np.zeros((H, W))
+    for name, (r, c) in _OFFSETS.items():
+        frame[r::2, c::2] = intensity[name]
+    return frame
+
+
+def test_conv_demodulation_exact_to_frame_border():
+    """A uniform polarized field must reconstruct exactly at EVERY pixel,
+    including the border ring (regression: mode='reflect' padding broke the
+    micropolarizer parity at the frame edge, mixing orientations there)."""
+    frame = _uniform_polarized_frame(dolp=0.4, phi_deg=25.0)
+    _, s1, s2 = compute_stokes(frame, method="conv_demodulation")
+    dolp = np.sqrt(s1**2 + s2**2)
+    assert np.nanmax(np.abs(dolp - 0.4)) < 1e-12
+
+
+def test_conv_demodulation_rejects_kernel_argument():
+    frame = _uniform_polarized_frame()
+    with pytest.raises(TypeError, match="no keyword options"):
+        compute_stokes(frame, method="conv_demodulation", kernel="4x4")
+
+
+def test_nonpositive_s0_propagates_nan():
+    """Dead/NaN pixels must come out as NaN Stokes, not fake flat water
+    (s1 = s2 = 0 would bias nanmedian(dolp) and mss downstream)."""
+    frame = _uniform_polarized_frame()
+    frame[:] = np.nan
+    S0, s1, s2 = compute_stokes(frame, method="bilinear")
+    assert np.isnan(s1).all() and np.isnan(s2).all()
+
+
 def test_bilinear_and_kernel_averaging_agree(synthetic_frame):
     """For smooth fields, bilinear and kernel-averaging should give similar
     DoLP within a few percent. Validates that both methods produce sensible

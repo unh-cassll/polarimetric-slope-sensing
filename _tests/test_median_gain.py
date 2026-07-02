@@ -25,7 +25,7 @@ from pss.stokes import _OFFSETS
 
 # Pinned regression values (DEFAULT settings: native half-resolution
 # reduction, empirical gain from median frame, theta_i = 30 deg,
-# n_water = 1.34). See SESSION_HANDOFF.md for context.
+# n_water = 1.34).
 EXPECTED_GAIN = 1.5587
 EXPECTED_MEDIAN_DOLP = 0.3309      # this frame, post-gain (NOT the ideal 0.4406)
 EXPECTED_MEDIAN_AOI = 26.099       # deg
@@ -67,7 +67,7 @@ def test_frame0001_reduced_with_median_gain(frame_stack_nc_path, median_nc_path)
 
     result = compute_slope_field(
         frame,
-        gain_mode="empirical",  # method defaults to Ratliff Method 4
+        gain_mode="empirical",  # resolution/method left at package defaults
         theta_i_mean_deg=meta.theta_i_mean_deg,
         n_water=meta.n_water,
         gain_reference_frame=median_frame,
