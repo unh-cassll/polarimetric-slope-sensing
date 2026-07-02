@@ -339,6 +339,49 @@ def test_long_wave_true_recovers_swell():
     assert 0.1 < eta_long.std() < 0.35
 
 
+def test_freqs_cwt_accepted_and_threads_to_wavelet_band(monkeypatch):
+    """reconstruct_eta_field(freqs_cwt=...) must be accepted (regression: the
+    slope-projection refactor dropped the parameter while run_epss and the demo
+    still passed it) and the band must reach the wavelet method's CWT."""
+    import eta_field_recon.recon as recon_mod
+
+    sx, sy, fs = _synthetic_swell_stack(T=150, A=0.3)
+    band = np.linspace(0.1, 1.5, 30)
+    seen = []
+    orig_cwt = recon_mod._cwt
+
+    def spy_cwt(x, freqs, fs_, mother=None):
+        seen.append(np.asarray(freqs))
+        return orig_cwt(x, freqs, fs_, mother)
+
+    monkeypatch.setattr(recon_mod, "_cwt", spy_cwt)
+    _, eta_w, _, _, _ = reconstruct_eta_field(
+        sx, sy, dx=0.05, fs=fs, water_depth_m=100.0, downsample=2,
+        long_wave_method="wavelet", freqs_cwt=band, verbose=False)
+    assert np.isfinite(eta_w).all()
+    assert seen and all(np.array_equal(f, band) for f in seen)
+    # Fourier path accepts (and ignores) the band without error.
+    _, eta_f, _, _, _ = reconstruct_eta_field(
+        sx, sy, dx=0.05, fs=fs, water_depth_m=100.0, downsample=2,
+        freqs_cwt=band, verbose=False)
+    assert np.isfinite(eta_f).all()
+
+
+def test_temporal_window_kind_reaches_long_wave_estimator():
+    """temporal_window='rect' vs 'tukey' must change eta_long (regression: the
+    kind was once applied only to the confidence mask)."""
+    sx, sy, fs = _synthetic_swell_stack(T=150, A=0.3)
+    _, eta_tukey, _, conf_t, _ = reconstruct_eta_field(
+        sx, sy, dx=0.05, fs=fs, water_depth_m=100.0, downsample=2,
+        temporal_window="tukey", verbose=False)
+    _, eta_rect, _, conf_r, _ = reconstruct_eta_field(
+        sx, sy, dx=0.05, fs=fs, water_depth_m=100.0, downsample=2,
+        temporal_window="rect", verbose=False)
+    assert not np.allclose(eta_tukey, eta_rect)
+    # rect window -> unit temporal confidence everywhere.
+    assert np.allclose(conf_r.max(axis=(1, 2)), conf_r.max())
+
+
 # ---------------------------------------------------------------------------
 # Field-data driver: physics-based length gate
 # ---------------------------------------------------------------------------

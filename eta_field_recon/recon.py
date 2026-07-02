@@ -15,12 +15,12 @@ Architecture:
                          per frame by construction.
                          pyGrad2Surf.g2s does the heavy lifting.
 
-  - eta_long(t)          temporal CWT of the spatial-mean slope -> per-
-                         (f, t) Krogstad direction estimator with signed
-                         projection -> dispersion-relation integration ->
-                         inverse CWT.  Recovers the "integration constant"
-                         that varies in time but not in space (within
-                         the frame).
+  - eta_long(t)          directionally-complete slope projection of the
+                         disc-mean slope (fourier_slope_projection by
+                         default; wavelet_slope_projection uses a Morlet
+                         CWT for the phase only).  Recovers the
+                         "integration constant" that varies in time but
+                         not in space (within the frame).
 
   - eta(x, y, t) = eta_short(x, y, t) + eta_long(t)
 
@@ -30,11 +30,11 @@ Windowing:
     Defaults are light (Tukey alpha=0.1, pad 10%) because g2s is robust
     to edge artifacts on its own; the option is exposed for noisy-edge
     cases.
-  - Temporal: Tukey window applied to the spatial-mean slope BEFORE the
-    CWT, suppressing the wavelet's cone-of-influence edge artifacts that
-    would otherwise smear any slow drift across the whole record.
-    Default Tukey alpha=0.25 (taper outer 12.5% on each end, unit gain
-    over the middle 75%).
+  - Temporal: window applied to the disc-mean slope series BEFORE the
+    rfft/CWT, suppressing edge artifacts that would otherwise smear any
+    slow drift across the whole record. Kind and taper are set by
+    temporal_window/temporal_alpha. Default Tukey alpha=0.25 (taper
+    outer 12.5% on each end, unit gain over the middle 75%).
 
 Returns a confidence mask (T, Ny, Nx) on [0, 1] = spatial_window x
 temporal_window so downstream code can weight/crop appropriately.
@@ -125,7 +125,7 @@ def long_wave_gate(record_duration_s, freqs_cwt=None, min_periods=0.5):
 
 def invert_mean_slope_series(sx_mean, sy_mean, fs, water_depth_m=100.0,
                              long_wave_method='fourier', hp_fmin=0.08,
-                             temporal_alpha=0.25):
+                             temporal_alpha=0.25, freqs_cwt=None):
     """Long-wave elevation eta_long(t) from a spatial-mean slope series.
 
     The single-point form of the long-wave path in reconstruct_eta_field: the
@@ -141,17 +141,21 @@ def invert_mean_slope_series(sx_mean, sy_mean, fs, water_depth_m=100.0,
         long_wave_method : 'fourier' (default) or 'wavelet'.
         hp_fmin          : logistic high-pass corner (Hz). Default 0.08.
         temporal_alpha   : Tukey taper alpha. Default 0.25.
+        freqs_cwt        : CWT frequency grid (Hz) for the 'wavelet' method.
+                           Default None -> linspace(0.05, 2.0, 80). Ignored
+                           for 'fourier'.
 
     Returns:
         eta_long : (T,) elevation series (m), up-positive.
     """
     sx = np.asarray(sx_mean, dtype=float)
     sy = np.asarray(sy_mean, dtype=float)
-    A, Sx, Sy, T = _direct_complete_amplitude(sx, sy, fs, water_depth_m, None,
-                                              jinc=False, hp_fmin=hp_fmin,
-                                              temporal_alpha=temporal_alpha)
+    A, Sx, Sy, T, _ = _direct_complete_amplitude(sx, sy, fs, water_depth_m, None,
+                                                 jinc=False, hp_fmin=hp_fmin,
+                                                 temporal_alpha=temporal_alpha)
     if long_wave_method == 'wavelet':
-        fcwt = np.linspace(0.05, 2.0, 80)
+        fcwt = (np.asarray(freqs_cwt, dtype=float) if freqs_cwt is not None
+                else np.linspace(0.05, 2.0, 80))
         win = tukey(T, temporal_alpha)
         Wsx = _cwt(detrend(sx) * win, fcwt, fs).values
         Wsy = _cwt(detrend(sy) * win, fcwt, fs).values
@@ -190,15 +194,17 @@ def _aperture_spatial_mean(field_stack, mask):
 
 
 def _direct_complete_amplitude(sx_mean, sy_mean, fs, depth, diameter_m, jinc=True,
-                               hp_fmin=0.08, hp_width_oct=0.25, temporal_alpha=0.25):
+                               hp_fmin=0.08, hp_width_oct=0.25, temporal_alpha=0.25,
+                               temporal_window='tukey'):
     """rfft-grid directionally-complete long-wave amplitude A(f)=sqrt(|Sx|^2+|Sy|^2)/k
     (Phillips 1977), jinc aperture-corrected and logistic high-passed. Returns
-    (A, Sx, Sy, T); Sx, Sy are the windowed disc-mean slope rffts. Shared by the
-    fourier and wavelet slope projections below."""
+    (A, Sx, Sy, T, win); Sx, Sy are the windowed disc-mean slope rffts and win the
+    temporal window applied. Shared by the fourier and wavelet slope projections
+    below."""
     sE = detrend(np.asarray(sx_mean, float))
     sN = detrend(np.asarray(sy_mean, float))
     T = sE.size
-    win = tukey(T, temporal_alpha)
+    win = _make_temporal_window(T, temporal_window, temporal_alpha)
     wn = np.sqrt(np.mean(win ** 2))
     f = np.fft.rfftfreq(T, 1.0 / fs)
     _, k = lindisp_with_current(2 * np.pi * f, depth, 0.0)
@@ -216,7 +222,7 @@ def _direct_complete_amplitude(sx_mean, sy_mean, fs, depth, diameter_m, jinc=Tru
     with np.errstate(divide='ignore'):
         lr = (np.log2(np.maximum(f, 1e-12)) - np.log2(hp_fmin)) / hp_width_oct
     A = A * np.clip(1.0 / (1.0 + np.exp(-lr)), 0.0, 1.0)
-    return A, Sx, Sy, T
+    return A, Sx, Sy, T, win
 
 
 def _aperture_disc(slope_x_field, slope_y_field, dx, aperture_diameter_m):
@@ -232,7 +238,8 @@ def _aperture_disc(slope_x_field, slope_y_field, dx, aperture_diameter_m):
 
 def fourier_slope_projection(slope_x_field, slope_y_field, dx, fs, depth,
                              aperture_diameter_m=None, jinc=True, hp_fmin=0.08,
-                             hp_width_oct=0.25, temporal_alpha=0.25):
+                             hp_width_oct=0.25, temporal_alpha=0.25,
+                             temporal_window='tukey'):
     """Long-wave eta(t) by per-frequency signed slope projection.
 
     Disc-mean slope rffts. Per frequency: direction cos=|Sx|/m, sin=(|Sy|/m)*
@@ -242,8 +249,9 @@ def fourier_slope_projection(slope_x_field, slope_y_field, dx, fs, depth,
     amplitude form of the directional estimator of Krogstad, Magnusson & Donelan
     (2006). slope_*_field are (T, Ny, Nx); aperture_diameter_m None = full frame."""
     sxm, sym, diam = _aperture_disc(slope_x_field, slope_y_field, dx, aperture_diameter_m)
-    A, Sx, Sy, T = _direct_complete_amplitude(sxm, sym, fs, depth, diam, jinc,
-                                              hp_fmin, hp_width_oct, temporal_alpha)
+    A, Sx, Sy, T, _ = _direct_complete_amplitude(sxm, sym, fs, depth, diam, jinc,
+                                                 hp_fmin, hp_width_oct, temporal_alpha,
+                                                 temporal_window)
     m = np.sqrt(np.abs(Sx) ** 2 + np.abs(Sy) ** 2) + 1e-30
     rel = np.sign(np.real(Sy * np.conj(Sx)))
     rel = np.where(rel == 0, 1.0, rel)
@@ -254,7 +262,8 @@ def fourier_slope_projection(slope_x_field, slope_y_field, dx, fs, depth,
 
 def wavelet_slope_projection(slope_x_field, slope_y_field, dx, fs, depth,
                              aperture_diameter_m=None, jinc=True, hp_fmin=0.08,
-                             hp_width_oct=0.25, temporal_alpha=0.25, mother=None):
+                             hp_width_oct=0.25, temporal_alpha=0.25, mother=None,
+                             temporal_window='tukey', freqs_cwt=None):
     """Long-wave eta(t): wavelet (CWT) signed slope projection for the phase, with the
     same directionally-complete direct amplitude as fourier_slope_projection.
 
@@ -263,12 +272,14 @@ def wavelet_slope_projection(slope_x_field, slope_y_field, dx, fs, depth,
     eta_krog = Re(iCWT). The amplitude is then imposed from the direct slope spectrum so
     the wavelet carries only the phase. The directional estimator of Krogstad, Magnusson
     & Donelan (2006), reduced to the bare per-(f,t) projection (no skirt correction, no
-    aperture blend). slope_*_field are (T, Ny, Nx); aperture_diameter_m None = full frame."""
+    aperture blend). slope_*_field are (T, Ny, Nx); aperture_diameter_m None = full frame.
+    freqs_cwt (Hz) sets the CWT band; None -> linspace(0.05, 2.0, 80)."""
     sxm, sym, diam = _aperture_disc(slope_x_field, slope_y_field, dx, aperture_diameter_m)
-    A, _, _, T = _direct_complete_amplitude(sxm, sym, fs, depth, diam, jinc,
-                                            hp_fmin, hp_width_oct, temporal_alpha)
-    fcwt = np.linspace(0.05, 2.0, 80)
-    win = tukey(T, temporal_alpha)
+    A, _, _, T, win = _direct_complete_amplitude(sxm, sym, fs, depth, diam, jinc,
+                                                 hp_fmin, hp_width_oct, temporal_alpha,
+                                                 temporal_window)
+    fcwt = (np.asarray(freqs_cwt, dtype=float) if freqs_cwt is not None
+            else np.linspace(0.05, 2.0, 80))
     Wsx = _cwt(detrend(sxm) * win, fcwt, fs, mother).values
     Wsy = _cwt(detrend(sym) * win, fcwt, fs, mother).values
     _, kc = lindisp_with_current(2 * np.pi * fcwt, depth, 0.0)
@@ -290,6 +301,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                            water_depth_m=100.0,
                            downsample=4,
                            long_wave_method='fourier',
+                           freqs_cwt=None,
                            # spatial windowing
                            spatial_alpha=0.1,
                            spatial_pad_frac=0.10,
@@ -314,6 +326,10 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         'wavelet' (wavelet_slope_projection) for the long-wave
                         eta(t); both share the directionally-complete amplitude
                         and differ only in the phase source.
+        freqs_cwt     : CWT frequency grid (Hz) for long_wave_method='wavelet'.
+                        Default None -> linspace(0.05, 2.0, 80). Ignored for
+                        'fourier' (which works on the rfft grid); the drivers
+                        also key their record-length gate off its minimum.
 
         spatial_alpha    : Tukey alpha for the 2-D slope window.
                            Default 0.1 (light taper).
@@ -363,8 +379,8 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         eta_short : (T, Ny_d, Nx_d) zero-mean-per-frame short-wave field, or
                     None if short_wave=False.
         confidence: (T, Ny_d, Nx_d) on [0, 1]: spatial_W x temporal_W.
-        diag      : dict of intermediates (CWT coefficients, windows,
-                    cropped coordinate vectors, etc.)
+        diag      : dict of intermediates (disc-mean slope series, windows,
+                    aperture mask, coordinate vectors, pad sizes).
     """
     T, Ny, Nx = slope_x_field.shape
     ds = downsample
@@ -445,11 +461,14 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
         if verbose:
             print(f"    computing eta_long(t) from disc-mean slopes "
                   f"({long_wave_method}) ...")
-        proj = (wavelet_slope_projection if long_wave_method == 'wavelet'
-                else fourier_slope_projection)
-        eta_long = proj(sx_ds, sy_ds, dx_ds, fs, water_depth_m,
-                        aperture_diameter_m=aperture_diameter_m,
-                        temporal_alpha=temporal_alpha)
+        proj_kwargs = dict(aperture_diameter_m=aperture_diameter_m,
+                           temporal_window=temporal_window,
+                           temporal_alpha=temporal_alpha)
+        if long_wave_method == 'wavelet':
+            proj, proj_kwargs['freqs_cwt'] = wavelet_slope_projection, freqs_cwt
+        else:
+            proj = fourier_slope_projection
+        eta_long = proj(sx_ds, sy_ds, dx_ds, fs, water_depth_m, **proj_kwargs)
     else:
         if verbose:
             print(f"    long_wave=False: skipping eta_long(t) (set to zero).")

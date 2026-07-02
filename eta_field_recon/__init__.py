@@ -10,9 +10,10 @@ imager footprint, combining:
   - a per-frame Harker-O'Leary spatial integration of slope -> wave SHAPE
     (zero-mean-per-frame eta_short(x, y, t))
 
-  - a continuous-wavelet-based temporal inversion of the spatial-mean
-    slope -> long-wave time series (eta_long(t)), which fills in the
-    "integration constant" that the spatial integration loses
+  - a directionally-complete slope projection of the spatial-mean slope
+    (fourier by default, wavelet-phase optional) -> long-wave time series
+    (eta_long(t)), which fills in the "integration constant" that the
+    spatial integration loses
 
 These two paths are orthogonal: short has zero spatial mean per frame,
 long has no spatial structure inside the frame. eta(x, y, t) = eta_short
@@ -30,8 +31,7 @@ Quick start:
         downsample=8,
     )
 
-See README.md for the method, HANDOFF.md for the derivation, gotchas, and
-ideas for extensions.
+See README.md for the method, gotchas, and ideas for extensions.
 """
 
 from .recon import (reconstruct_eta_field, long_wave_gate,

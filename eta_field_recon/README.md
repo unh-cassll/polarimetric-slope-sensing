@@ -49,13 +49,15 @@ eta_xyt, eta_long, eta_short, conf, diag = reconstruct_eta_field(
 
 Returns:
 
-- `eta_xyt`   `(T, Ny_d, Nx_d)` reconstructed elevation field (m).
+- `eta_xyt`   `(T, Ny_d, Nx_d)` reconstructed elevation field (m), or
+              `None` when `short_wave=False`.
 - `eta_long`  `(T,)` long-wave (spatial-mean) time series (m).
-- `eta_short` `(T, Ny_d, Nx_d)` zero-mean-per-frame short-wave field (m).
+- `eta_short` `(T, Ny_d, Nx_d)` zero-mean-per-frame short-wave field (m),
+              or `None` when `short_wave=False`.
 - `conf`      `(T, Ny_d, Nx_d)` on [0, 1]: spatial window × temporal
               window.  Use for masking/weighting downstream.
-- `diag`      dict of intermediates (window vectors, CWT coefficients,
-              coordinate vectors, etc.)
+- `diag`      dict of intermediates (disc-mean slope series, window
+              vectors, aperture mask, coordinate vectors, pad sizes).
 
 ## Method
 
@@ -67,10 +69,12 @@ Two paths, summed:
    The frame is reflection-padded and Tukey-tapered before integration,
    then cropped and tapered again.
 
-2. **Long wave path**: the spatial-mean slopes `(<sx>(t), <sy>(t))` are
-   Tukey-windowed in time, CWT'd, projected onto a Krogstad signed-
-   direction estimate per `(f, t)`, integrated by the dispersion relation,
-   and inverse-CWT'd to give `η_long(t)`.
+2. **Long wave path**: the disc-mean slopes `(<sx>(t), <sy>(t))` are
+   windowed in time and projected onto a Krogstad signed-direction
+   estimate — per rfft frequency (`fourier_slope_projection`, the
+   default) or per CWT `(f, t)` cell (`wavelet_slope_projection`) — with
+   the amplitude imposed from the direct slope spectrum via the
+   dispersion relation, giving `η_long(t)`.
 
 The full field is `η(x, y, t) = η_short(x, y, t) + η_long(t)`.
 

@@ -170,8 +170,10 @@ def reconstruct_eta_from_record(
             falls back to reconstruct_eta_field's own default.
         fs_hz : frame rate. If None, taken from the file's `framerate`.
         downsample : spatial subsample factor for the output grid.
-        freqs_cwt : frequency grid (Hz) for the long-wave record-length gate
-            (keys off its minimum). If None, linspace(0.05, 2.0, 80) is used.
+        freqs_cwt : frequency grid (Hz) for the long-wave path. Keys the
+            record-length gate off its minimum and is forwarded to
+            `reconstruct_eta_field` (where it sets the CWT band when
+            long_wave_method='wavelet'). If None, linspace(0.05, 2.0, 80).
         min_periods : record must span at least this many periods of the
             lowest CWT frequency for the long-wave path to run. Default 0.5.
         force_long_wave : override the gate. True forces the long-wave path
@@ -455,8 +457,9 @@ def reconstruct_eta_from_record(
             camera_azimuth_deg=ortho_geom["azimuth_deg"],
             verbose=verbose,
         )
-        # griddata leaves NaN outside the footprint; reconstruct_eta_field and
-        # g2s need finite slopes. Replace the small no-data border with 0.
+        # Orthorectification leaves NaN outside the source footprint;
+        # reconstruct_eta_field and g2s need finite slopes. Replace the small
+        # no-data border with 0.
         slope_x = np.nan_to_num(ortho_result.slope_x, nan=0.0, copy=False)
         slope_y = np.nan_to_num(ortho_result.slope_y, nan=0.0, copy=False)
         ground_dx_m = ortho_result.dx_m
@@ -508,6 +511,8 @@ def reconstruct_eta_from_record(
         aperture_diameter_m=aperture_diameter_m,
         long_wave=long_wave, short_wave=short_wave, verbose=verbose,
     )
+    if freqs_cwt is not None:
+        recon_kwargs["freqs_cwt"] = freqs_cwt
     if water_depth_m is not None:
         recon_kwargs["water_depth_m"] = water_depth_m
 

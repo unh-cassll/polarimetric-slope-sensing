@@ -172,11 +172,10 @@ def main():
 
     # Reconstruct
     print("\nRunning reconstruction (downsample=4 -> 64x64) ...")
-    freqs_cwt = np.linspace(0.05, 1.5, 60)
     t0 = time.perf_counter()
     eta_xyt, eta_long, eta_short, conf, diag = reconstruct_eta_field(
         sx_field, sy_field, dx=dx, fs=fs,
-        freqs_cwt=freqs_cwt, water_depth_m=100.0, downsample=4,
+        water_depth_m=100.0, downsample=4,
         spatial_alpha=0.1, spatial_pad_frac=0.10,
         temporal_window='tukey', temporal_alpha=0.25)
     print(f"  reconstruction: {time.perf_counter()-t0:.1f} s")
