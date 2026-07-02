@@ -85,7 +85,13 @@ def slope_anchor_gain(seapol_x, seapol_y, present_x=None, present_y=None,
                             notes="native seapol amplitude (f=1)")
     vp = _longwave_amp2(present_x, present_y)
     vs = _longwave_amp2(seapol_x, seapol_y)
-    f = float(np.sqrt(vp / max(vs, 1e-12)))
-    f = float(np.clip(f, *_F_BOUNDS))
+    # Degenerate temporal variance (single frame or constant/all-NaN tilt
+    # series): amplitude ratio undefined; fall back to f=1 rather than
+    # railing to the lower clip bound via 0/eps.
+    if not (np.isfinite(vs) and vs > 1e-12 and np.isfinite(vp)):
+        return AnchorResult(f=1.0, mode=mode, var_present=vp, var_seapol=vs,
+                            notes="degenerate FOV-mean tilt variance (single "
+                                  "frame or constant series); f=1 fallback")
+    f = float(np.clip(np.sqrt(vp / vs), *_F_BOUNDS))
     return AnchorResult(f=f, mode=mode, var_present=vp, var_seapol=vs,
                         notes=f"f matches long-wave tilt amplitude ({mode})")

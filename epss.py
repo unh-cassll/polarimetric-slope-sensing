@@ -36,6 +36,7 @@ case "empirical" is the sensible choice). All are overridable via kwargs, and
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -196,6 +197,10 @@ def run_epss(
             diameter (m) of the centered circular aperture over which the
             spatial-mean slope is averaged for the long-wave inversion;
             None (default) uses the full frame.
+        short_wave : if True, run the per-frame g2s integration to produce
+            the resolved eta_short / eta_xyt fields. Default False -- the
+            cheap path returns the slope fields and eta_long only, with
+            eta_xyt and eta_short as None.
 
         resolution, method, gain_mode, n_water, lab_gain,
         gain_reference_frame : forwarded to pss.compute_slope_field for the
@@ -425,8 +430,22 @@ def run_epss(
             print(f"  reducing {T} frame(s) via seapol sky-aware inversion ...")
 
         def _stokes(fr):
-            return (by_superpixel(fr) if resolution == "native"
-                    else compute_stokes(fr, method=method))
+            if resolution == "native":
+                return by_superpixel(fr)
+            if resolution == "pistellato":
+                # Half-res corrected reduction, matching the pitch doubling in
+                # the ortho stage (a full-res stack there would carry a 2x
+                # ground-scale error).
+                if focal_length_m is None or pixel_pitch_m is None:
+                    raise ValueError(
+                        "resolution='pistellato' requires focal_length_m and "
+                        "pixel_pitch_m (camera intrinsics for the projective "
+                        "correction).")
+                from pss.pistellato import corrected_stokes_superpixel
+                return corrected_stokes_superpixel(
+                    fr, focal_length_m=focal_length_m,
+                    pixel_pitch_m=pixel_pitch_m)
+            return compute_stokes(fr, method=method)
 
         stok = [_stokes(f) for f in frames]
         S0 = np.stack([a[0] for a in stok])
@@ -493,6 +512,16 @@ def run_epss(
             )
 
         res0 = _reduce(frames[0], use_ref_frame=True)
+        # The requested mode can downgrade inside apply_gain (e.g. empirical
+        # with no usable reference -> none); report what was actually applied.
+        if gain_mode == "empirical" and res0.gain_mode != "empirical":
+            warnings.warn(
+                f"empirical gain was requested but could not be applied: "
+                f"{res0.gain_notes or 'no reference'}. Slopes are "
+                f"uncalibrated; supply gain_reference_frame= (with "
+                f"theta_i_mean_deg) or a longer record.",
+                UserWarning, stacklevel=2)
+        gain_mode = res0.gain_mode
         Ny, Nx = res0.Sx.shape
         slope_x = np.empty((T, Ny, Nx), dtype=float)
         slope_y = np.empty((T, Ny, Nx), dtype=float)
@@ -634,6 +663,9 @@ def run_epss_from_slopes(
             docs). aperture_diameter_m sets the diameter (m) of the centered
             circular aperture over which the spatial-mean slope is averaged for
             the long-wave inversion; None (default) uses the full frame.
+        short_wave : if True, run the per-frame g2s integration to produce the
+            resolved eta_short / eta_xyt fields. Default False (eta_long only;
+            eta_xyt and eta_short are None).
 
         verbose : print progress.
 

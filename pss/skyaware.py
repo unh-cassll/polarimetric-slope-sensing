@@ -31,6 +31,7 @@ Not modeled: direct sun glint (sun disk), foam, multiple scattering.
 from __future__ import annotations
 
 import datetime as _dt
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -215,10 +216,13 @@ class SkyAwareInverter:
         return self.R0 + (1.0 - sky_depolarization) * self.R1 + upwelling_scale * self.RW
 
     def set_environment(self, sky_depolarization, upwelling_scale=1.0, d_sep=0.12):
-        """Finalize the forward map and the TWO-BRANCH inverse table for one
-        environment. Branch 1 = smallest |slope| per measurement cell;
-        branch 2 = smallest-|slope| alternative at slope distance > d_sep
-        (fold disambiguation). Each branch stores its predicted intensity."""
+        """Finalize the forward map and the inverse table for one environment.
+
+        The 2-D inverse table keeps the smallest-|slope| branch per
+        measurement cell; the S0 path resolves the sky-polarization folds via
+        the kNN cloud instead. Cells whose measurement is also consistent
+        with a second, well-separated branch (slope distance > d_sep) are
+        counted in the `ambiguous` diagnostic only."""
         self.sky_depolarization, self.upwelling_scale = float(sky_depolarization), float(upwelling_scale)
         S = self._stokes(sky_depolarization, upwelling_scale)
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -233,46 +237,38 @@ class SkyAwareInverter:
         i2 = np.rint((s2 + m_max) / self.dm).astype(int)
         inside = ok & (i1 >= 0) & (i1 < n_m) & (i2 >= 0) & (i2 < n_m)
         flat = (i1 * n_m + i2)[inside]
-        sa_v, sc_v, I_v = self.SA[inside], self.SC[inside], I[inside]
+        sa_v, sc_v = self.SA[inside], self.SC[inside]
         mag = sa_v ** 2 + sc_v ** 2
         order = np.lexsort((mag, flat))      # grouped by cell, |s| ascending
-        flat_s, sa_s, sc_s, I_s = (flat[order], sa_v[order], sc_v[order],
-                                   I_v[order])
+        flat_s, sa_s, sc_s = flat[order], sa_v[order], sc_v[order]
         cells, starts = np.unique(flat_s, return_index=True)
         ends = np.append(starts[1:], len(flat_s))
 
         shape = (n_m * n_m,)
         A1 = np.full(shape, np.nan); C1 = np.full(shape, np.nan)
-        I1 = np.full(shape, np.nan)
-        A2 = np.full(shape, np.nan); C2 = np.full(shape, np.nan)
-        I2 = np.full(shape, np.nan)
         A1[cells] = sa_s[starts]; C1[cells] = sc_s[starts]
-        I1[cells] = I_s[starts]
+        # Fold-ambiguity diagnostic: cells also consistent with a second,
+        # well-separated slope branch. The 2-D path always takes branch 1;
+        # the S0 kNN path resolves folds by brightness instead.
         d2 = d_sep ** 2
-        for c, a, b in zip(cells, starts, ends):
+        n_amb = 0
+        for a, b in zip(starts, ends):
             if b - a < 2:
                 continue
             da = sa_s[a + 1:b] - sa_s[a]
             dc = sc_s[a + 1:b] - sc_s[a]
-            far = np.nonzero(da * da + dc * dc > d2)[0]
-            if far.size:
-                j = a + 1 + far[0]
-                A2[c], C2[c], I2[c] = sa_s[j], sc_s[j], I_s[j]
+            if np.any(da * da + dc * dc > d2):
+                n_amb += 1
 
         A1 = A1.reshape(n_m, n_m); C1 = C1.reshape(n_m, n_m)
-        I1 = I1.reshape(n_m, n_m)
         filled = np.isfinite(A1)
         dist, (jy, jx) = ndimage.distance_transform_edt(
             ~filled, return_indices=True)
         near = dist <= self.max_fill
         self.tabA = np.where(near, A1[jy, jx], np.nan)
         self.tabC = np.where(near, C1[jy, jx], np.nan)
-        self.tabI = np.where(near, I1[jy, jx], np.nan)
-        self.tabA2 = np.where(near, A2.reshape(n_m, n_m)[jy, jx], np.nan)
-        self.tabC2 = np.where(near, C2.reshape(n_m, n_m)[jy, jx], np.nan)
-        self.tabI2 = np.where(near, I2.reshape(n_m, n_m)[jy, jx], np.nan)
         self.coverage = float(np.mean(near))
-        self.ambiguous = float(np.nanmean(np.isfinite(self.tabA2)[near]))
+        self.ambiguous = float(n_amb / max(len(cells), 1))
         self._tree = None                    # KNN rebuilt lazily per env
         return self
 
@@ -295,6 +291,7 @@ class SkyAwareInverter:
         self._knn_sa = self.SA[sel]
         self._knn_sc = self.SC[sel]
         self._knn_w_I = w_I
+        self._knn_mss0 = tuple(np.asarray(mss0, dtype=float))
         self._knn_I_med = I_med
         if self._knn_device is not None:
             m = pts.shape[0]
@@ -335,7 +332,10 @@ class SkyAwareInverter:
             sc = np.where(ok, self.tabC[i1c, i2c], np.nan)
             return sc, sa
 
-        if self._tree is None or self._knn_w_I != w_I:
+        # Rebuild when any input that shaped the model cloud changed: mss0
+        # sets the intensity centering (I_med), not just w_I.
+        if (self._tree is None or self._knn_w_I != w_I
+                or self._knn_mss0 != tuple(np.asarray(mss0, dtype=float))):
             self._build_knn(w_I, mss0)
         shp = np.asarray(s1).shape
         S0n = np.asarray(S0, dtype=float)
@@ -586,7 +586,19 @@ def resolve_environment(s1_ref, s2_ref, S0_ref, *, theta_v_deg, n_water,
                         water_case=water_case))
     fit = probe.infer_sky(np.asarray(s1_ref), np.asarray(s2_ref),
                           S0=np.asarray(S0_ref), mss0=mss0)
+    if not np.isfinite(fit["gain"]):
+        raise ValueError(
+            "sky inference produced a non-finite polarimetric gain; the "
+            "reference frame's DoLP is degenerate (all-NaN, saturated, or "
+            "zero). Supply env= explicitly or a usable reference frame."
+        )
     railed = not (_GAIN_BOUNDS[0] <= fit["gain"] <= _GAIN_BOUNDS[1])
+    if railed:
+        warnings.warn(
+            f"blind-inferred polarimetric gain {fit['gain']:.3f} outside "
+            f"sanity bounds {_GAIN_BOUNDS} (low sun or glint?); the "
+            f"environment is returned anyway and may need an explicit env=.",
+            UserWarning, stacklevel=2)
     if verbose:
         flag = "  [WARN: gain out of bounds -- low-sun/glint?]" if railed else ""
         print(f"    skyaware infer: sky_depolarization={fit['sky_depolarization']:.2f} "
@@ -654,6 +666,15 @@ def skyaware_slope_stack(S0, s1, s2, *, theta_v_deg, n_water=1.34,
 
     do_present = gain_mode != "none"
     if do_present and gain_mode == "empirical" and dolp_obs_median is None:
+        if T == 1:
+            # A single frame's own median is not a valid empirical reference
+            # (see pss.gain.apply_gain: the identity holds for a temporal
+            # median, not an instantaneous frame).
+            warnings.warn(
+                "empirical anchor reference derived from the single frame "
+                "itself (self-referencing); supply dolp_obs_median= or a "
+                "multi-frame stack for a calibrated amplitude.",
+                UserWarning, stacklevel=2)
         dref = np.sqrt(np.nanmedian(s1, 0) ** 2 + np.nanmedian(s2, 0) ** 2)
         dolp_obs_median = float(np.nanmedian(dref))
 

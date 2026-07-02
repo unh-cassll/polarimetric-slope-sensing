@@ -2,8 +2,9 @@
 Wide-FOV calibration of the DoLP->angle-of-incidence (AOI) relationship.
 
 A wide-FOV polarimeter views water across a large range of incidence angles in a
-single (time-averaged) frame -- the bottom of the frame looks at grazing
-incidence, the top near nadir -- so one frame measures the whole DoLP(theta)
+single (time-averaged) frame -- one image edge looks toward grazing incidence,
+the opposite edge toward nadir (which edge is which depends on the mount; see
+`plane_normal_R`'s row_sign) -- so one frame measures the whole DoLP(theta)
 curve. A narrow telephoto imager sees only a few degrees of incidence and cannot
 self-calibrate that curve; inverting its DoLP through the ideal Fresnel relation
 is biased by the real sky polarization and the unpolarized water-leaving pedestal.
@@ -74,9 +75,9 @@ def plane_normal_R(incidence_deg: float, row_sign: float = -1.0) -> np.ndarray:
 
     For a camera tilted `incidence_deg` from nadir about the horizontal (rows)
     axis. Only R[:, 2] is consumed downstream. `row_sign` sets which way
-    incidence increases down the image rows: for a mount flipped about the
-    horizontal (e.g. the Piermont cameras) incidence increases toward the
-    BOTTOM of the frame -> row_sign=-1 (the default). Verify the sign once per
+    incidence increases along the image rows: row_sign=-1 (the default, e.g. a
+    mount flipped about the horizontal) puts increasing incidence toward the
+    TOP of the frame; row_sign=+1 toward the BOTTOM. Verify the sign once per
     mount against the Fresnel DoLP-vs-incidence slope on below-Brewster rows; a
     wrong sign inverts the AOI-vs-row mapping (the measured curve looks like a
     falling branch and the empirical LUT is garbage).
@@ -98,9 +99,14 @@ def per_row_incidence(W: int, H: int, K: np.ndarray, R: np.ndarray) -> np.ndarra
 
 
 def strip_profile(field2d: np.ndarray, strip_half: int = 25) -> np.ndarray:
-    """Mean over the central column strip -> per-row profile."""
+    """Mean over the central column strip -> per-row profile.
+
+    The strip is clipped to the frame; a negative start index would wrap
+    around and average the wrong columns on narrow frames.
+    """
     c = field2d.shape[1] // 2
-    return np.nanmean(field2d[:, c - strip_half:c + strip_half + 1], axis=1)
+    lo = max(c - strip_half, 0)
+    return np.nanmean(field2d[:, lo:c + strip_half + 1], axis=1)
 
 
 def valid_incidence_mask(theta_row: np.ndarray, lo: float, hi: float) -> np.ndarray:

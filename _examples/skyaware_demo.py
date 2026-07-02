@@ -49,7 +49,9 @@ F_BAND = (0.05, 1.0)
 def _read_stack(path):
     """Load (T,H,W) raw DoFP frames + acquisition geometry from a bundled nc."""
     ds = nc.Dataset(str(path))
-    raw = np.asarray(ds["raw_frame"][:], dtype=float)
+    # float32: the full record is ~10 GB on disk; float64 would double the
+    # in-memory stack for no precision benefit (reduction is per frame).
+    raw = np.asarray(ds["raw_frame"][:], dtype=np.float32)
     if raw.ndim == 2:
         raw = raw[None]
     geom = dict(
@@ -67,9 +69,10 @@ def _read_stack(path):
 
 def _hm0(eta_series, fs):
     from scipy.signal import welch
+    trapz = getattr(np, "trapezoid", np.trapz)   # numpy < 2.0 compatibility
     f, S = welch(eta_series - np.nanmean(eta_series), fs=fs, nperseg=min(1024, eta_series.size))
     m = (f >= F_BAND[0]) & (f <= F_BAND[1])
-    return 4.0 * np.sqrt(np.trapezoid(S[m], f[m])) if m.any() else float("nan")
+    return 4.0 * np.sqrt(trapz(S[m], f[m])) if m.any() else float("nan")
 
 
 def main(argv=None) -> int:
@@ -104,13 +107,15 @@ def main(argv=None) -> int:
         n_water=geom["n_water"], verbose=True,
     )
     if args.full:
+        # short_wave=True: the entry-point default (False) returns
+        # eta_xyt=None, and the Hm0 comparison needs the resolved field.
         res = run_epss(frames, fs=geom["fs"],
                        theta_i_mean_deg=geom["theta_i_mean_deg"],
                        freeboard_m=geom["freeboard_m"],
                        pixel_pitch_m=geom["pixel_pitch_m"],
                        focal_length_m=geom["focal_length_m"],
                        camera_azimuth_deg=geom["camera_azimuth_deg"],
-                       water_depth_m=15.0, **common)
+                       water_depth_m=15.0, short_wave=True, **common)
     else:
         # slope-only (a 3 s record is too short for the long-wave inversion).
         res = run_epss(frames, theta_i_mean_deg=geom["theta_i_mean_deg"], **common)
@@ -123,8 +128,8 @@ def main(argv=None) -> int:
           f"{np.nanvar(res.slope_x) + np.nanvar(res.slope_y):.4f}")
 
     if args.full and res.eta_xyt is not None:
-        ny, nx = res.eta_xyt.shape[:2]
-        cam = _hm0(res.eta_xyt[ny // 2, nx // 2], geom["fs"])
+        _, ny, nx = res.eta_xyt.shape                 # (T, Ny, Nx)
+        cam = _hm0(res.eta_xyt[:, ny // 2, nx // 2], geom["fs"])
         t_l, elev = _data.lidar_elevation()
         fs_l = 1.0 / np.nanmedian(np.diff(t_l))
         lid = _hm0(np.asarray(elev), fs_l)
