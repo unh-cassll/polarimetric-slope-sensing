@@ -1,20 +1,25 @@
 """
-Console-script entry points for `pip install pss`.
+Console-script entry points for the `epss` distribution.
 
-The actual CLI logic lives in the example scripts at the repo root (under
-`examples/`). Those scripts are designed to be runnable in-place
-(`python _examples/load_and_reduce.py ...`) without installation. When the
-package is pip-installed, this module re-exposes them as the console scripts
-declared in pyproject.toml:
+The actual CLI logic lives in the example scripts at the repo root
+(`_examples/`), which are runnable in-place (`python
+_examples/load_and_reduce.py ...`). This module re-exposes them as the
+console scripts declared in pyproject.toml:
 
     pss-load-reduce         <- _examples/load_and_reduce.py
     pss-load-reduce-median  <- _examples/load_and_reduce_with_median_gain.py
+    pss-skyaware-demo       <- _examples/skyaware_demo.py
     pss-eta-demo            <- eta_field_recon/demo_eta_field.py
 
-We bridge by adding the script's directory to sys.path on demand and
-importing its main() function. This avoids duplicating CLI logic and means
-edits to the scripts at the repo root automatically flow through to the
-console-script behavior.
+CLONE/EDITABLE INSTALLS ONLY: `_examples/` and `_data/` are deliberately
+excluded from wheels (the data module caches multi-GB Zenodo downloads
+beside itself), so these scripts require the repository on disk
+(`pip install -e .` from a clone). A wheel install raises the actionable
+RuntimeError below.
+
+The bridge adds the script's directory to sys.path on demand and imports its
+main() function, so edits to the repo-root scripts flow through without
+duplicated CLI logic.
 """
 
 from __future__ import annotations
@@ -31,10 +36,11 @@ def _import_main_from(script_relpath: str, func_name: str = "main"):
     script_path = repo_root / script_relpath
     if not script_path.exists():
         raise RuntimeError(
-            f"could not locate console-script source at {script_path}; "
-            f"if you installed from a wheel, the auxiliary scripts may "
-            f"not have been bundled. Run the package modules directly "
-            f"instead (e.g. `python _examples/load_and_reduce.py`)."
+            f"could not locate console-script source at {script_path}. "
+            f"The console scripts need the repository on disk (wheel installs "
+            f"exclude _examples/ and _data/): clone the repo and install "
+            f"editable (`pip install -e .`), then rerun, or run the script "
+            f"directly (`python _examples/load_and_reduce.py`)."
         )
     spec = importlib.util.spec_from_file_location(
         f"_pss_cli_{script_path.stem}", script_path,

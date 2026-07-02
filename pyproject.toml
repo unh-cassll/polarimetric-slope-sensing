@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+# >=77 for PEP 639 license expression + license-files below.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -79,6 +80,12 @@ gpu = [
 all = [
     "epss[test,notebook,skyaware,gpu]",
 ]
+
+# seapol is not on a package index; resolve it from its public repository so
+# `uv lock`/`uv sync --extra skyaware` work. pip users install it from the
+# same URL (see the skyaware extra comment above).
+[tool.uv.sources]
+seapol = { git = "https://github.com/unh-cassll/surface-wave-light-reflection" }
 
 [project.urls]
 Homepage      = "https://github.com/unh-cassll/polarimetric-slope-sensing"
