@@ -1,8 +1,8 @@
 """
-Tests for the step-3 entry-point work:
+Tests for the E-PSS entry points:
 
   A. The empirical-gain decision in `run_epss`, including the >=30 s
-     auto-temporal-median trigger and the decoupling of fs / theta_i from the
+     auto-temporal-median trigger and the independence of fs / theta_i from the
      eta-stage geometry gate.
   B. The `run_epss_from_slopes` entry point for already-orthorectified slope
      fields.
@@ -118,7 +118,7 @@ def test_explicit_gain_mode_is_respected():
 
 
 # ---------------------------------------------------------------------------
-# A. eta-stage gate decoupling
+# A. eta-stage gate: independent of fs / theta_i
 # ---------------------------------------------------------------------------
 
 def test_fs_and_theta_alone_does_not_run_eta_or_raise():

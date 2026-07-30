@@ -1,7 +1,7 @@
 """
 Regression tests for the E-PSS median-frame empirical-gain workflow.
 
-Exercises two things added for the single-frame + median-gain task:
+Exercises two parts of the single-frame + median-gain path:
 
   1. read_netcdf_frame() transparently handling the stack schema
      (raw_frame dims (time, x, y); superpixel_layout dims
@@ -12,7 +12,7 @@ Exercises two things added for the single-frame + median-gain task:
      individual frame.
 
 These pin the reduced numbers for asit_2019_raw_pol_frame0001.nc calibrated against
-asit_2019_raw_pol_median.nc. If a change moves them, something broke.
+asit_2019_raw_pol_median.nc.
 """
 
 from __future__ import annotations
@@ -84,8 +84,8 @@ def test_frame0001_reduced_with_median_gain(frame_stack_nc_path, median_nc_path)
 
 
 def test_empirical_without_reference_falls_back_to_no_gain(frame_stack_nc_path, median_nc_path):
-    """Self-referencing is gone: empirical gain with NO reference frame must
-    fall back to no gain (never force this frame's median DoLP onto the
+    """Empirical gain with NO reference frame must fall back to no gain rather
+    than self-reference (which would force this frame's median DoLP onto the
     Fresnel ideal). The median-referenced result must differ from it."""
     frame, meta = read_netcdf_frame(frame_stack_nc_path)
     median_frame, _ = read_netcdf_frame(median_nc_path)

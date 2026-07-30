@@ -14,8 +14,8 @@ the NetCDF file already carries:
 This is the STATIC case only: the platform does not move, so the camera pose
 is constant and the projection is a single fixed mapping computed once -- no
 per-frame motion and no IMU needed. The moving-platform case (per-frame
-attitude-driven rectification) is deliberately out of scope; see the TODO in
-eta_pipeline.py.
+attitude-driven rectification) is not implemented; it requires a per-frame
+motion source such as an IMU/INS.
 
 Why this matters for the eta inversion
 --------------------------------------
@@ -24,8 +24,7 @@ An oblique view samples the surface non-uniformly: pixels imaging the far
 the footprint is a trapezoid and the effective ground dx VARIES across the
 frame. reconstruct_eta_field assumes a single constant dx on a uniform grid.
 Orthorectifying resamples the trapezoid onto a uniform grid and yields the
-one true dx, which is exactly the value reconstruct_eta_field needs (and which
-the pipeline previously required the caller to supply by hand).
+one true dx, which is exactly the value reconstruct_eta_field needs.
 
 What this does NOT do: rotate the (Sx, Sy) slope vectors for camera tilt.
 On a static platform that tilt is a CONSTANT offset, removed once at the
@@ -40,8 +39,8 @@ The tilt is taken to lie in one image plane (the camera looks down at
 theta_i in the plane of the "along-look" image axis; the orthogonal axis is
 "cross-look"). This is the simplest correct model for a camera tilted in a
 single plane (the typical nadir-ish oblique mount) and needs no full 3-D
-attitude. The cross-look axis is treated as level. If a future setup has a
-compound tilt, this is where a full rotation matrix would go.
+attitude. The cross-look axis is treated as level. A compound tilt is not
+modeled; it would require a full 3-D rotation matrix here.
 """
 from __future__ import annotations
 

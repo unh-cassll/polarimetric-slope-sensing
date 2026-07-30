@@ -2,7 +2,7 @@
 """Developer one-shot: Piermont 2025 dual-camera mean frames -> epss NetCDF.
 
 Reads the v7.3 (HDF5) mean-frame structs and the run log, and writes the minimal
-artifacts the wide-FOV / dual-camera demo consumes, in the schema `pss.io`
+data products the wide-FOV / dual-camera demo consumes, in the schema `pss.io`
 already reads (vars raw_frame / theta_i_mean / n_water / framerate /
 superpixel_layout; attrs pss_processing_*).
 
@@ -12,8 +12,8 @@ The afternoon session (runs 14-22 on 2025-09-29) ran two cameras at once:
   * UNH 75 mm NARROW scanned 23-51 deg -> the high-resolution imager whose DoLP
     we invert through the wide calibration.
 
-Minimal-artifact policy
------------------------
+Minimal data-product policy
+---------------------------
 calibrate_widefov uses only the CENTRAL COLUMN (per-row incidence) and a narrow
 central strip (the DoLP profile), and the narrow imager is reduced to one
 (theta, DoLP) point per run. So we crop to a central column band, symmetric about
@@ -192,7 +192,7 @@ def main():
     ap.add_argument("--datadir", required=True,
                     help="directory holding the Piermont 2025 v7.3 .mat "
                          "mean-frame structs (developer one-shot; the "
-                         "converted artifacts are already committed)")
+                         "converted data products are already committed)")
     ap.add_argument("--outdir", default=os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "_data"))
     ap.add_argument("--band-cols", type=int, default=128,

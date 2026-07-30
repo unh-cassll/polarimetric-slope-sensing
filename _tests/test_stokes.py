@@ -102,8 +102,9 @@ def _uniform_polarized_frame(H=32, W=32, S0=1000.0, dolp=0.4, phi_deg=25.0):
 
 def test_conv_demodulation_exact_to_frame_border():
     """A uniform polarized field must reconstruct exactly at EVERY pixel,
-    including the border ring (regression: mode='reflect' padding broke the
-    micropolarizer parity at the frame edge, mixing orientations there)."""
+    including the border ring: border padding that does not preserve
+    micropolarizer parity (e.g. mode='reflect') mixes orientations at the
+    frame edge."""
     frame = _uniform_polarized_frame(dolp=0.4, phi_deg=25.0)
     _, s1, s2 = compute_stokes(frame, method="conv_demodulation")
     dolp = np.sqrt(s1**2 + s2**2)

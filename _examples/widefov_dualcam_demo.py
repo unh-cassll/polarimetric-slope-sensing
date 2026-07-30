@@ -17,7 +17,7 @@ the paper's overcast/cloudless columns):
             no gain      ideal-Fresnel lookup on the raw narrow DoLP
             lab gain     ditto, with the fixed lab-calibrated DoLP gain
             emp. gain    ditto, with the single-camera empirical DoLP gain
-            dual cam     the wide camera's MEASURED DoLP(theta) lookup  <- winner
+            dual cam     the wide camera's MEASURED DoLP(theta) lookup
             pure seapol  the seapol forward-model lookup at the real sun geometry
 
 The first three share the ideal-Fresnel lookup and differ only in the narrow

@@ -356,7 +356,7 @@ def reconstruct_eta_field(slope_x_field, slope_y_field, dx, fs,
                         run_epss_from_slopes, reconstruct_eta_from_record)
                         default this to False so the cheap path ships just the
                         slope fields and eta_long; callers that need the
-                        resolved field (e.g. the field-spectrum tool) opt in.
+                        resolved field opt in.
 
         aperture_diameter_m : diameter (m) of a centered circular aperture
                         over which the slope is averaged to form the spatial-

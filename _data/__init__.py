@@ -19,7 +19,7 @@ Zenodo on first use and cached in EXAMPLES_DIR, with md5 verification against
 the checksums published in the record. (Anything dropped into EXAMPLES_DIR by
 hand is used as-is if the checksum matches.)
 
-What IS committed is a small derived artifact, asit2019_mean_slope_60s.nc,
+What IS committed is a small derived data product, asit2019_mean_slope_60s.nc,
 holding the spatial-mean slope time series sx_mean(t), sy_mean(t) for the full
 60 s record (1-D, a few KB), precomputed once from the full stack (reduce each
 frame with pss.compute_slope_field, average spatially). It lets
@@ -34,15 +34,15 @@ import shutil
 import urllib.request
 from pathlib import Path
 
-# Directory holding (cached) example NetCDF files and the committed artifact.
+# Directory holding (cached) example NetCDF files and committed data products.
 EXAMPLES_DIR = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 # Zenodo archive.
 # ---------------------------------------------------------------------------
-# Versioned record id (10.5281/zenodo.20361229, v1). We deliberately pin the
-# *version* record, not the concept record (20361228), so the bytes we fetch
-# never change underneath us. Bump this when pinning a newer data version.
+# Versioned record id (10.5281/zenodo.20361229, v1). This pins the *version*
+# record, not the concept record (20361228), so the fetched bytes are fixed.
+# Bump it when pinning a newer data version.
 ZENODO_RECORD_ID = "20361229"
 ZENODO_FILE_URL = (
     "https://zenodo.org/records/" + ZENODO_RECORD_ID + "/files/{name}?download=1"
@@ -61,14 +61,14 @@ _MD5 = {
     STACK_FULL_FILENAME: "9974f2b354f7517652d003cb5aef13fa",
 }
 
-# Committed derived artifact (precomputed spatial-mean slope series).
+# Committed derived data product (precomputed spatial-mean slope series).
 MEAN_SLOPE_FILENAME = "asit2019_mean_slope_60s.nc"
 
-# Committed independent-validation artifact: Riegl LD90-3 water-surface
+# Committed independent-validation data product: Riegl LD90-3 water-surface
 # elevation, packaged once from the raw elevation array.
 LIDAR_ELEVATION_FILENAME = "asit2019_lidar_elevation_10min.nc"
 
-# Committed dual-camera demo artifacts (Piermont 2025), produced once by
+# Committed dual-camera demo data products (Piermont 2025), produced once by
 # _examples/convert_piermont_dualcam.py from the v7.3 mean-frame structs. Both
 # are small (central column band, uint16 raw counts): the LDEO 5 mm WIDE frame
 # is the DoLP-AOI calibration input; the UNH 75 mm NARROW stack is the
@@ -178,7 +178,7 @@ def stack_full_path(*, allow_download: bool = True) -> Path:
 
 
 def mean_slope_path() -> Path:
-    """Local path to the committed spatial-mean slope artifact.
+    """Local path to the committed spatial-mean slope data product.
 
     This is a small derived file, committed to the repository (not on Zenodo).
     If it is missing, restore it from git or regenerate it from the full stack
@@ -189,7 +189,7 @@ def mean_slope_path() -> Path:
     if not path.exists():
         raise FileNotFoundError(
             f"{MEAN_SLOPE_FILENAME} not found in {EXAMPLES_DIR}. It is a "
-            f"committed artifact: restore it with `git checkout -- "
+            f"committed data product: restore it with `git checkout -- "
             f"_data/{MEAN_SLOPE_FILENAME}`, or regenerate it from the full "
             f"stack (reduce each frame with pss.compute_slope_field, average "
             f"spatially, save sx_mean/sy_mean and the framerate)."
@@ -198,7 +198,7 @@ def mean_slope_path() -> Path:
 
 
 def lidar_elevation_path() -> Path:
-    """Local path to the committed Riegl LD90-3 elevation artifact.
+    """Local path to the committed Riegl LD90-3 elevation data product.
 
     A small committed file (not on Zenodo), packaged once from the raw
     elevation array.
@@ -248,11 +248,12 @@ def piermont_wide_path(*, allow_download: bool = True) -> Path:
     """Local path to the committed Piermont LDEO 5 mm wide mean frame.
 
     `allow_download` is accepted for a uniform resolver signature but ignored:
-    these artifacts are committed, not fetched (a missing file always raises).
+    these data products are committed, not fetched (a missing file always
+    raises).
     """
     return _committed_path(
         PIERMONT_WIDE_FILENAME,
-        "It is a committed dual-camera demo artifact; regenerate it with "
+        "It is a committed dual-camera demo data product; regenerate it with "
         "python _examples/convert_piermont_dualcam.py (needs the MATLAB data).")
 
 
@@ -260,11 +261,11 @@ def piermont_narrow_stack_path(*, allow_download: bool = True) -> Path:
     """Local path to the committed Piermont UNH 75 mm narrow stack.
 
     `allow_download` is accepted for a uniform resolver signature but ignored
-    (committed artifact; a missing file always raises).
+    (committed data product; a missing file always raises).
     """
     return _committed_path(
         PIERMONT_NARROW_FILENAME,
-        "It is a committed dual-camera demo artifact; regenerate it with "
+        "It is a committed dual-camera demo data product; regenerate it with "
         "python _examples/convert_piermont_dualcam.py (needs the MATLAB data).")
 
 
@@ -281,7 +282,7 @@ def mean_wave_timeseries(water_depth_m: float | None = None, verbose: bool = Tru
     Returns:
         (t, eta_long) : time vector (s) and mean-wave elevation (m), both 1-D.
 
-    Requires the committed artifact to exist (see mean_slope_path()).
+    Requires the committed data product to exist (see mean_slope_path()).
     """
     import numpy as np
     from netCDF4 import Dataset

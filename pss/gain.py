@@ -39,7 +39,7 @@ from dataclasses import dataclass
 import numpy as np
 
 # Default lab-calibrated gains from the MATLAB implementation
-# (sample_slope_field_calculations.m, lines 35-36, dated 2023-11-21).
+# (_original_routines_MATLAB/sample_slope_field_calculations.m, lines 34-35).
 DEFAULT_LAB_GAIN = (1.2185, 1.2197)
 
 

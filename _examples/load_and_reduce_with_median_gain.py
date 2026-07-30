@@ -7,10 +7,11 @@ This is the canonical E-PSS empirical-gain workflow (Laxague et al.):
     g = DoLP_ideal(theta_i) / median( DoLP_obs(median_frame) )
 
 The gain is derived once from the stable temporal-median frame and then
-applied to each individual frame. This differs from the single-frame demo
-(`load_and_reduce.py`), which applies no empirical gain unless a reference is supplied
-and therefore forces every frame's median DoLP onto the Fresnel ideal --
-erasing the real frame-to-frame DoLP variability that carries the wave signal.
+applied to each individual frame. The single-frame demo (`load_and_reduce.py`)
+applies no empirical gain unless such a reference is supplied, because
+self-referencing the gain from one frame would force that frame's median DoLP
+onto the Fresnel ideal -- erasing the real frame-to-frame DoLP variability that
+carries the wave signal.
 
 It exercises:
     1. read_netcdf_frame()        -- load the frame to reduce  (frame .nc)

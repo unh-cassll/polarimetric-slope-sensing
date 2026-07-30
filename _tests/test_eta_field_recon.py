@@ -17,9 +17,9 @@ from eta_field_recon import reconstruct_eta_field, lindisp_with_current
 
 # ---------------------------------------------------------------------------
 # Signed amplitude calibration: reconstruction must be upright (not inverted)
-# for any mother wavelet. ewdm tabulates cdelta only for Morlet(6); the -1
-# sentinel for other omega0 used to silently sign-flip eta(t) while Hs and the
-# spectrum looked perfect.
+# for any mother wavelet. ewdm tabulates cdelta only for Morlet(6); passing the
+# -1 sentinel returned for other omega0 straight through sign-flips eta(t)
+# while Hs and the spectrum still look correct.
 # ---------------------------------------------------------------------------
 
 def test_cdelta_sentinel_warns_not_silent():
@@ -340,9 +340,9 @@ def test_long_wave_true_recovers_swell():
 
 
 def test_freqs_cwt_accepted_and_threads_to_wavelet_band(monkeypatch):
-    """reconstruct_eta_field(freqs_cwt=...) must be accepted (regression: the
-    slope-projection refactor dropped the parameter while run_epss and the demo
-    still passed it) and the band must reach the wavelet method's CWT."""
+    """reconstruct_eta_field(freqs_cwt=...) must be accepted -- run_epss and
+    the demo both pass it -- and the requested band must reach the wavelet
+    method's CWT rather than being silently replaced by the default band."""
     import eta_field_recon.recon as recon_mod
 
     sx, sy, fs = _synthetic_swell_stack(T=150, A=0.3)
@@ -368,8 +368,9 @@ def test_freqs_cwt_accepted_and_threads_to_wavelet_band(monkeypatch):
 
 
 def test_temporal_window_kind_reaches_long_wave_estimator():
-    """temporal_window='rect' vs 'tukey' must change eta_long (regression: the
-    kind was once applied only to the confidence mask)."""
+    """temporal_window='rect' vs 'tukey' must change eta_long: the window kind
+    tapers the record fed to the long-wave estimator, not only the confidence
+    mask."""
     sx, sy, fs = _synthetic_swell_stack(T=150, A=0.3)
     _, eta_tukey, _, conf_t, _ = reconstruct_eta_field(
         sx, sy, dx=0.05, fs=fs, water_depth_m=100.0, downsample=2,
@@ -564,9 +565,9 @@ def test_run_epss_all_params_runs_eta():
 def test_run_epss_partial_params_raises():
     """Partial eta-stage GEOMETRY -> clear error.
 
-    Under the decoupled gate, fs and theta_i_mean_deg may be supplied alone
-    (they enable the empirical-gain path), so it is specifically a partial
-    set of the three geometry params (freeboard/pitch/focal) that must raise.
+    fs and theta_i_mean_deg may be supplied alone (they enable the
+    empirical-gain path), so it is specifically a partial set of the three
+    geometry params (freeboard/pitch/focal) that must raise.
     Uses a synthetic raw frame so it runs offline.
     """
     from epss import run_epss
@@ -579,13 +580,12 @@ def test_run_epss_partial_params_raises():
 
 
 def test_run_epss_fs_and_theta_alone_is_allowed():
-    """fs + theta_i without the full geometry is now valid (gain path only).
+    """fs + theta_i without the full geometry is valid (gain path only).
 
-    This is the contract change from decoupling fs/theta_i from the
-    eta-geometry all-or-nothing set: the call must NOT raise, must not run the
-    eta stage, and must return slope fields. (A short synthetic record means
-    no gain is auto-enabled, which is fine -- we are testing the gate, not the
-    gain.)
+    fs and theta_i sit outside the eta-geometry all-or-nothing set: the call
+    must NOT raise, must not run the eta stage, and must return slope fields.
+    (A short synthetic record means no gain is auto-enabled, which is fine --
+    this exercises the gate, not the gain.)
     """
     from epss import run_epss
     rng = np.random.RandomState(1)
@@ -628,10 +628,9 @@ def test_run_epss_single_frame_promoted_to_stack():
 
 
 # ---------------------------------------------------------------------------
-# Regression guard: a uniform swell tilt must survive to eta_long.
-# This is the test that would have caught the per-frame de-mean bug, where
-# pss.compute_slope_field subtracted each frame's spatial-mean slope and so
-# destroyed the swell-induced footprint tilt before the long-wave inversion.
+# A uniform swell tilt must survive to eta_long: per-frame removal of the
+# spatial-mean slope in pss.compute_slope_field would destroy the
+# swell-induced footprint tilt before the long-wave inversion.
 # ---------------------------------------------------------------------------
 
 def test_uniform_swell_tilt_survives_to_eta_long():
@@ -698,7 +697,7 @@ def test_short_wave_false_skips_field_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# Weak-point regressions: per-band direction sign, crossover edge bias,
+# Edge-case guards: per-band direction sign, crossover edge bias,
 # transfer-function NaN handling, empty aperture, skirt NaN policy,
 # single-band inverse, recolor band ceiling.
 # ---------------------------------------------------------------------------

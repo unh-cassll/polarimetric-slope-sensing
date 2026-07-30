@@ -1,10 +1,10 @@
 """
 eta_pipeline -- field-data driver tying pss -> eta_field_recon together.
 
-This is the end-to-end entry point that did not exist before: it reads a
-multi-frame DoFP record from NetCDF, reduces every frame to a slope field
-with `pss.compute_slope_field`, stacks the results into the (T, Ny, Nx)
-arrays that `reconstruct_eta_field` expects, and reconstructs eta(x, y, t).
+This is the end-to-end entry point: it reads a multi-frame DoFP record from
+NetCDF, reduces every frame to a slope field with `pss.compute_slope_field`,
+stacks the results into the (T, Ny, Nx) arrays that `reconstruct_eta_field`
+expects, and reconstructs eta(x, y, t).
 
 The long-wave (mean-wave) inversion is *gated on record length*. A record
 that spans only a second or two cannot resolve a long swell: the lowest CWT
@@ -16,9 +16,9 @@ signal. The gate below therefore requires the record to span at least
 is run; otherwise it is skipped (long_wave=False) and eta_xyt == eta_short.
 
 The natural defaults (min_periods, the 0.05 Hz floor) put the practical
-threshold near the ~10 s figure that motivated this, but the gate is stated
-in physical units (periods of the lowest resolved frequency) rather than a
-bare wall-clock number, so it tracks freqs_cwt if you change the band.
+threshold near 10 s, but the gate is stated in physical units (periods of
+the lowest resolved frequency) rather than a bare wall-clock number, so it
+tracks freqs_cwt if you change the band.
 
 Pixel scale note
 ----------------
@@ -59,8 +59,8 @@ from .orthorectify import orthorectify_static, OrthoResult
 # Default gate parameters. The threshold is "record must span >= min_periods
 # periods of the lowest CWT frequency". With the reconstruct_eta_field default
 # band (freqs_cwt.min() = 0.05 Hz -> 20 s period) and min_periods = 0.5 this
-# puts the practical floor at 10 s, matching the figure that motivated the
-# gate, while remaining physically defined rather than a bare wall-clock value.
+# puts the practical floor at 10 s, while remaining physically defined rather
+# than a bare wall-clock value.
 DEFAULT_MIN_PERIODS = 0.5
 
 
@@ -364,7 +364,7 @@ def reconstruct_eta_from_record(
     # ------------------------------------------------------------------
     # Reduce every frame to a slope field and stack.
     # ------------------------------------------------------------------
-    # Per-record invariants, hoisted out of the frame loop: the Fresnel
+    # Per-record invariants, built once before the frame loop: the Fresnel
     # lookup (a 200k-point PCHIP fit) and the empirical-gain reference DoLP
     # (a full Stokes reduction of the reference frame).
     from pss import build_lookup_table

@@ -1,10 +1,10 @@
 """
 Tests for the circular-aperture spatial-mean knob on the long-wave inversion,
-and for the shared Krogstad-projection helper extracted into wavelet_core.
+and for the shared Krogstad-projection helper in wavelet_core.
 
-All synthetic and fully offline (no Zenodo data): they exercise the new code
-paths added when the long-wave inversion gained an `aperture_diameter_m`
-option, plus the dedup of the Krogstad signed projection.
+All synthetic and fully offline (no Zenodo data): they exercise the
+`aperture_diameter_m` option on the long-wave inversion and the shared
+Krogstad signed projection.
 """
 
 from __future__ import annotations
@@ -108,7 +108,8 @@ def test_aperture_mean_of_constant_field_is_that_constant():
 
 
 # ---------------------------------------------------------------------------
-# reconstruct_eta_field: aperture default is unchanged; finite aperture differs
+# reconstruct_eta_field: default aperture is the full frame; a finite one
+# gives a different eta_long
 # ---------------------------------------------------------------------------
 
 def _synthetic_slope_stack(T=64, Ny=32, Nx=32, fs=10.0, dx=0.05, seed=0):

@@ -14,7 +14,7 @@ The behavior scales with what you give it:
     (fs, theta_i, freeboard, pixel_pitch, focal_length) -> the slope stack is
     also orthorectified onto a uniform ground grid (static-platform geometry)
     and the surface elevation eta(x, y, t) is reconstructed, including the
-    long-wave (mean-wave) inference. The long-wave path remains gated on
+    long-wave (mean-wave) inference. The long-wave path is gated on
     record length exactly as in eta_pipeline (a short record returns
     eta_long = 0).
 
@@ -23,8 +23,9 @@ all of them raises a clear error rather than silently doing half the job,
 because orthorectification and the dispersion-relation inversion each need
 the full set to be physically meaningful.
 
-This is the array/in-memory sibling of `eta_field_recon.reconstruct_eta_from
-_record`, which does the same chain starting from a NetCDF file on disk.
+This is the array/in-memory sibling of
+`eta_field_recon.reconstruct_eta_from_record`, which does the same chain
+starting from a NetCDF file on disk.
 
 Defaults for the pss reduction
 ------------------------------
@@ -105,7 +106,7 @@ class EpssResult:
 # orthorectification and the dispersion-relation inversion each need the full
 # set to be physically meaningful.
 #
-# Two acquisition params are deliberately NOT in this set, because each is
+# Two acquisition params are excluded from this set, because each is
 # meaningful on its own (independent of running eta):
 #   - fs               : sets the record duration, which gates the empirical-
 #                        gain auto-median trigger;
@@ -322,7 +323,7 @@ def run_epss(
         # target (none/lab/empirical), not a DoFP DoLP gain. Default to the
         # in-scene empirical anchor (the mainline single-camera recipe). This
         # also keeps the Fresnel gain-decision block below inert (gain_mode is
-        # no longer None), so its auto-median logic does not run.
+        # non-None from here on), so its auto-median logic does not run.
         gain_mode = gain_mode or "empirical"
 
     # ------------------------------------------------------------------
@@ -403,7 +404,7 @@ def run_epss(
 
     # ------------------------------------------------------------------
     # Reduction: raw frames -> per-frame slope stack. The Fresnel lookup (a
-    # 200k-point PCHIP fit) is a per-record invariant, hoisted here.
+    # 200k-point PCHIP fit) is a per-record invariant, built once here.
     # ------------------------------------------------------------------
     if inversion in _WIDE_INVERSIONS:
         # Select the wide-calibration table for the requested mode.
@@ -659,10 +660,11 @@ def run_epss_from_slopes(
 
         water_depth_m, downsample, freqs_cwt, min_periods, force_long_wave,
         spatial_alpha, spatial_pad_frac, temporal_window, temporal_alpha,
-        aperture_diameter_m : forwarded to `reconstruct_eta_field` (see step-2
-            docs). aperture_diameter_m sets the diameter (m) of the centered
-            circular aperture over which the spatial-mean slope is averaged for
-            the long-wave inversion; None (default) uses the full frame.
+        aperture_diameter_m : forwarded to `reconstruct_eta_field` (see its
+            docstring). aperture_diameter_m sets the diameter (m) of the
+            centered circular aperture over which the spatial-mean slope is
+            averaged for the long-wave inversion; None (default) uses the
+            full frame.
         short_wave : if True, run the per-frame g2s integration to produce the
             resolved eta_short / eta_xyt fields. Default False (eta_long only;
             eta_xyt and eta_short are None).

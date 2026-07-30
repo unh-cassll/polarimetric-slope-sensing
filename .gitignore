@@ -6,17 +6,19 @@
 # .nc in _data/ ...
 _data/*.nc
 
-# ... EXCEPT the small committed derived data file: the spatial-mean slope
-# time series for the full 60 s record, produced once by
-# _tools/precompute_mean_wave.py and consumed by
-# _data/__init__.py:mean_wave_timeseries() to reconstruct eta_long(t) offline.
+# ... EXCEPT the small committed derived data product: the spatial-mean slope
+# time series for the full 60 s record, precomputed once from the full stack
+# (reduce every frame with pss.compute_slope_field, then average spatially)
+# and consumed by _data/__init__.py:mean_wave_timeseries() to reconstruct
+# eta_long(t) offline.
 !_data/asit2019_mean_slope_60s.nc
 
 # ... and the committed independent-validation file: the Riegl LD90-3
-# water-surface elevation series (built by _tools/make_lidar_elevation_nc.py).
+# water-surface elevation series, packaged once from the raw elevation array
+# (6000 samples at 10 Hz, t=0 at acquisition start).
 !_data/asit2019_lidar_elevation_10min.nc
 
-# ... and the small committed dual-camera demo artifacts (Piermont 2025),
+# ... and the small committed dual-camera demo data products (Piermont 2025),
 # central-column uint16 mean frames produced once by
 # _examples/convert_piermont_dualcam.py: the LDEO 5 mm wide DoLP-AOI
 # calibration frame and the UNH 75 mm narrow multi-angle stack.
@@ -35,7 +37,7 @@ dist/
 # Ignore the contents of _dustbin/
 _dustbin/*
 
-# Ignore robot bits
+# Virtual environment, editor, and tooling directories
 .venv
 .vscode
 .claude

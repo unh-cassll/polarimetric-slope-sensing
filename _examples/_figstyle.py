@@ -1,9 +1,9 @@
 """Shared figure style for the example scripts.
 
-Ported from the E-PSS paper's `subroutines.utils.figure_style` so the demo
-figures match the paper: seaborn "ticks" theme, Fira Sans, the project color
-cycle, gridded axes. seaborn / Fira Sans are applied when available and fall
-back to plain matplotlib otherwise, so the examples never hard-depend on them.
+Matches the figure style of the E-PSS paper: seaborn "ticks" theme, Fira Sans,
+the project color cycle, gridded axes. seaborn / Fira Sans are applied when
+available and fall back to plain matplotlib otherwise, so the examples never
+hard-depend on them.
 """
 
 from __future__ import annotations

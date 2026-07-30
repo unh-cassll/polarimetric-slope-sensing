@@ -222,13 +222,13 @@ stack3 = _data.stack_3s_path()    # 505 MB
 full   = _data.stack_full_path()  # 10.1 GB
 ```
 
-The one data file that **is** committed is a small derived artifact, `_data/asit2019_mean_slope_60s.nc` (a few KB): the spatial-mean slope time series `sx_mean(t)`, `sy_mean(t)` for the full 60 s record, precomputed once from the full stack (reduce every frame with `pss.compute_slope_field`, then average spatially). It lets `_data.mean_wave_timeseries()` reconstruct the mean-wave elevation `eta_long(t)` live and offline, without the 10 GB download:
+The one data file that **is** committed is a small derived data product, `_data/asit2019_mean_slope_60s.nc` (a few KB): the spatial-mean slope time series `sx_mean(t)`, `sy_mean(t)` for the full 60 s record, precomputed once from the full stack (reduce every frame with `pss.compute_slope_field`, then average spatially). It lets `_data.mean_wave_timeseries()` reconstruct the mean-wave elevation `eta_long(t)` live and offline, without the 10 GB download:
 
 ```python
 t, eta_long = _data.mean_wave_timeseries()   # offline; uses the committed series
 ```
 
-A second small committed artifact, `_data/asit2019_lidar_elevation_10min.nc` (~105 KB), holds the independent validation ground truth: a 10-minute (6000-sample, 10 Hz) water-surface-elevation series from a Riegl LD90-3 laser altimeter. It loads via `_data.lidar_elevation()`:
+A second small committed data product, `_data/asit2019_lidar_elevation_10min.nc` (~105 KB), holds the independent validation ground truth: a 10-minute (6000-sample, 10 Hz) water-surface-elevation series from a Riegl LD90-3 laser altimeter. It loads via `_data.lidar_elevation()`:
 
 ```python
 t_lidar, elev = _data.lidar_elevation()      # Riegl LD90-3 elevation (m)
@@ -267,7 +267,7 @@ polarimetric-slope-sensing/
 ├── _examples/
 │   ├── load_and_reduce.py                pss demo (single frame; optional --median)
 │   ├── load_and_reduce_with_median_gain.py  E-PSS median-referenced gain demo
-│   ├── convert_piermont_dualcam.py       one-shot: Piermont .mat -> NetCDF artifacts
+│   ├── convert_piermont_dualcam.py       Piermont .mat -> NetCDF data products
 │   └── widefov_dualcam_demo.py           wide-FOV calibrates narrow imager (4-way)
 ├── _data/                               example data + Zenodo resolver package
 │   ├── __init__.py                       Zenodo resolver (download + md5);
@@ -296,7 +296,7 @@ polarimetric-slope-sensing/
 └── README.md
 ```
 
-The raw NetCDF files are **not** committed — they download from Zenodo on first use and cache in `_data/` (md5-verified), so `_data/*.nc` is `.gitignore`'d. A few small derived/demo artifacts are force-included in git as exceptions: `asit2019_mean_slope_60s.nc` (the spatial-mean slope series), `asit2019_lidar_elevation_10min.nc` (the Riegl lidar validation series), and the two Piermont 2025 dual-camera mean frames (`piermont2025_ldeo_wide_5mm_mean.nc`, `piermont2025_unh_narrow_75mm_stack.nc`); see the Input-data and wide-FOV sections.
+The raw NetCDF files are **not** committed — they download from Zenodo on first use and cache in `_data/` (md5-verified), so `_data/*.nc` is `.gitignore`'d. A few small derived/demo data products are force-included in git as exceptions: `asit2019_mean_slope_60s.nc` (the spatial-mean slope series), `asit2019_lidar_elevation_10min.nc` (the Riegl lidar validation series), and the two Piermont 2025 dual-camera mean frames (`piermont2025_ldeo_wide_5mm_mean.nc`, `piermont2025_unh_narrow_75mm_stack.nc`); see the Input-data and wide-FOV sections.
 
 ## Install
 
@@ -403,7 +403,7 @@ res = run_epss(narrow_frames, inversion="empirical_wide", wide_calibration=cal,
 | table             | `inversion=`       | what it is                                                        |
 |-------------------|--------------------|-------------------------------------------------------------------|
 | `lut_fresnel`     | `"fresnel"`        | ideal Fresnel DoLP(θ) — sky-blind baseline                        |
-| `lut_empirical`   | `"empirical_wide"` | the wide camera's **measured** DoLP(θ) — usually the winner       |
+| `lut_empirical`   | `"empirical_wide"` | the wide camera's **measured** DoLP(θ) — sky effects included     |
 | `lut_seapol`      | `"seapol_lut"`     | pure `seapol` forward prediction (needs sun geometry + `seapol`)  |
 | `lut_hybrid`      | `"hybrid"`         | `seapol` prediction + a fitted water-leaving pedestal & sky scale |
 
@@ -419,7 +419,7 @@ res = compute_slope_field(frame, resolution="pistellato",
                           focal_length_m=0.005, pixel_pitch_m=3.45e-6)
 ```
 
-The bundled Piermont artifacts are produced once from the raw MATLAB mean-frame structs by `_examples/convert_piermont_dualcam.py` (a developer one-shot needing `h5py`/`pandas`/`openpyxl`).
+The bundled Piermont data products are precomputed from the raw MATLAB mean-frame structs by `_examples/convert_piermont_dualcam.py` (requires `h5py`, `pandas`, and `openpyxl`).
 
 ## Library use
 
@@ -570,7 +570,7 @@ Two paths, summed:
 
 The two paths are orthogonal — short has zero spatial mean, long has no spatial structure inside the frame — and sum cleanly. For a frame of size L, the crossover frequency where wavelength = L is `f_crossover = √(g / 2πL) ≈ 0.7 Hz at L = 3 m`. Above that, the short path dominates; below it, the long path dominates.
 
-See [`eta_field_recon/README.md`](eta_field_recon/README.md) for the API reference and the full method derivation. The implementation is deliberately modular, so natural extension points (anti-aliasing, an MEM/MLM directional estimator, current correction, streaming for long records) are easy to slot in.
+See [`eta_field_recon/README.md`](eta_field_recon/README.md) for the API reference and the full method derivation. The implementation is modular: anti-aliasing, an MEM/MLM directional estimator, current correction, and streaming for long records are natural extension points.
 
 ### Long-wave inversion: calibration and robustness
 
@@ -609,7 +609,7 @@ The Python version reproduces all of that and generalizes step 4 into the config
 
 - **Bilinear interpolation method** uses `scipy.ndimage.map_coordinates(order=1)` and inverts each orientation's own (row, column) sample positions within the 2×2 super-pixel, registering the four channels onto the common full-frame grid.
 
-- **Conv-demodulation method (`conv_demodulation`) is the package default** and implements the exact **Ratliff, LaCasse & Tyo (2009) Method 4** — the 16-pixel interpolator from Fig. 3 of that paper (radius 3√2/2, four pixels per orientation, distance weights A = 0.3541, B = 0.2639, C = 0.1180). The four 4×4 kernels are convolved with the frame and combined per Eq. (12); the per-parity kernel→orientation mapping is derived from the configured super-pixel layout (`_OFFSETS`) rather than hard-coded, so it tracks the layout. It takes no kernel-size argument. (`kernel_averaging` still accepts `"2x2"`/`"4x4"`.)
+- **Conv-demodulation method (`conv_demodulation`) is the package default** and implements the exact **Ratliff, LaCasse & Tyo (2009) Method 4** — the 16-pixel interpolator from Fig. 3 of that paper (radius 3√2/2, four pixels per orientation, distance weights A = 0.3541, B = 0.2639, C = 0.1180). The four 4×4 kernels are convolved with the frame and combined per Eq. (12); the per-parity kernel→orientation mapping is derived from the configured super-pixel layout (`_OFFSETS`) rather than hard-coded, so it tracks the layout. It takes no kernel-size argument. (`kernel_averaging` accepts `"2x2"`/`"4x4"`.)
 
 - **`mss` definition.** `mss` is the **dimensionless** mean-square slope, `var(Sx) + var(Sy)`, where `Sx`, `Sy` are the surface slopes (tangents of the tilt). This is the standard air-sea quantity. Note this differs from the MATLAB driver, which computed `var(atand(Ax))` — the variance of the tilt *angle* in deg² (and via a double-`atand`). To recover the tilt-angle variance instead, use `var(result.Ax_deg) + var(result.Ay_deg)`; see the comment in `pss/slope.py`.
 

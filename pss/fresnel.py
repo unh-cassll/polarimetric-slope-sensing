@@ -89,8 +89,8 @@ def lut_from_curve(
 
     The reduction (sort by theta, truncate at the DoLP peak, keep strictly
     increasing DoLP samples, PCHIP, clamp beyond the peak, force theta=0 at
-    DoLP=0) mirrors the ideal-Fresnel table build; it is the fragile step, so it
-    is deliberately faithful to the validated prototype.
+    DoLP=0) mirrors the ideal-Fresnel table build; it is the fragile step, and
+    each stage is required for the table to invert cleanly.
 
     Parameters
     ----------

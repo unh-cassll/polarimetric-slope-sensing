@@ -138,8 +138,8 @@ def _mother_cdelta(mother):
 def _bare_inverse(W, freqs, fs, mother):
     """Torrence-Compo delta reconstruction with NO amplitude calibration.
 
-    Identical to the production inverse but with the leading constant set to
-    1.0, so a residual per-scale gain can be measured and inverted.
+    Identical to `_inverse_cwt` but with the leading constant set to 1.0, so a
+    residual per-scale gain can be measured and inverted.
     """
     if mother is None:
         mother = Morlet(6.0)
@@ -233,7 +233,7 @@ def _inverse_cwt(W, freqs, fs, mother=None, per_scale=False):
       reconstruction gain calibrated, at call time, by round-tripping unit
       reference sinusoids on this (freqs, fs, mother) grid (see
       _per_scale_gain).  Parameter-free; flattens the round-trip to ~1% in
-      the well-resolved interior of the band and removes the magic constant.
+      the well-resolved interior of the band and needs no fixed 1.4383 factor.
 
     Args:
         W         : (nf, T) complex CWT coefficients

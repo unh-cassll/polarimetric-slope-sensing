@@ -9,11 +9,10 @@ direction, Fresnel reflection, first-order water-leaving), and the map is invert
 by a dense measurement-space lookup table (3-D nearest-neighbor with the intensity
 channel resolving the sky-polarization fold).
 
-This module is the library home of the inverter that previously lived in the
-dev tree (_tools/sky_aware_inversion.py). It carries an OPTIONAL dependency on the
-`seapol` package; importing `pss` (and the default Fresnel/empirical/lab paths)
-never requires seapol. Selecting the sky-aware path without seapol raises a clear,
-actionable error (see `require_seapol`).
+This module carries an OPTIONAL dependency on the `seapol` package; importing
+`pss` (and the default Fresnel/empirical/lab paths) never requires seapol.
+Selecting the sky-aware path without seapol raises a clear, actionable error
+(see `require_seapol`).
 
 Frames and conventions (validated):
 - working frame: +x = surface->camera horizontal, +z up; s_along = d(eta)/dx
@@ -98,7 +97,7 @@ def _resolve_knn_device(backend):
     the inversion is a 3-D k=1 nearest-neighbor search, and a multithreaded
     cKDTree (O(N log M)) is ~30x FASTER than a brute-force GPU distance matmul
     (O(N M)) on a mid-range accelerator -- benchmarked 27 ms vs ~985 ms/frame on
-    a Quadro RTX 4000. The torch path is kept as a portable, validated option
+    a Quadro RTX 4000. The torch path is a portable, validated option
     for environments with few CPU cores or where M is small; select it
     explicitly (knn_backend='gpu' or PSS_KNN_BACKEND=gpu). The GPU win in this
     pipeline is the FFT spectral path, not the kNN."""
@@ -142,7 +141,7 @@ def _knn_query_torch(model_t, mnorm, query_np, device, chunk):
 
 
 # ==========================================================================
-# Forward-model LUT inverter (ported verbatim from the validated dev tree).
+# Forward-model LUT inverter.
 # ==========================================================================
 class SkyAwareInverter:
     """Forward-model LUT inversion for one acquisition geometry.
@@ -193,7 +192,7 @@ class SkyAwareInverter:
             S_pol = np.zeros_like(S_sky)
         else:
             sky_full = make_clear_sky(sun_zenith_deg, sun_azimuth_scene_deg,
-                                      I_sky=1.0, turbidity=0.0)  # external seapol arg (NOT renamed)
+                                      I_sky=1.0, turbidity=0.0)  # seapol's own keyword spelling
             S_full = np.asarray(sky_full(-d_in), dtype=float)
             S_sky = S_full.copy()
             S_sky[..., 1:] = 0.0                       # unpolarized part
@@ -315,12 +314,12 @@ class SkyAwareInverter:
         (out-of-model). `gain` scales (s1, s2) before matching; S0 is used
         in relative units (median-matched at the mss0 operating point).
 
-        Robustness gates (default off -> exact legacy behavior):
+        Robustness gates (default off -> no pixels excluded):
         `dolp_floor` rejects unpolarized, out-of-model pixels (observed DoLP
         sqrt(s1^2+s2^2) below the floor); `glint_mad` excludes the bright
         sun-glint/saturation tail (S0 above median + glint_mad*MAD) from BOTH
-        the per-frame S0 normalizer and the output, so a few glinty pixels no
-        longer shift the relative-intensity match for every other pixel."""
+        the per-frame S0 normalizer and the output, so a few glinty pixels
+        cannot shift the relative-intensity match for every other pixel."""
         if S0 is None:
             i1 = np.rint((np.asarray(s1) * gain + self.m_max) / self.dm)
             i2 = np.rint((np.asarray(s2) * gain + self.m_max) / self.dm)
@@ -342,7 +341,7 @@ class SkyAwareInverter:
         s1g = np.asarray(s1) * gain
         s2g = np.asarray(s2) * gain
         if dolp_floor <= 0.0 and glint_mad <= 0.0:
-            med = np.nanmedian(S0n)                     # legacy normalizer
+            med = np.nanmedian(S0n)                     # ungated normalizer
             gate = None
         else:
             gate = np.isfinite(S0n)                     # robust normalizer pool
@@ -492,7 +491,7 @@ class SkyAwareInverter:
 
 
 # ==========================================================================
-# Sun geometry (ported from the dev tree; no seapol needed).
+# Sun geometry (no seapol needed).
 # ==========================================================================
 def solar_position(dt_utc: _dt.datetime, lat: float, lon: float):
     """Approximate solar zenith and (compass, from-North CW) azimuth (deg)."""
@@ -622,8 +621,8 @@ def skyaware_slope_stack(S0, s1, s2, *, theta_v_deg, n_water=1.34,
                          dolp_obs_median=None, ref_index=None,
                          lookup_table=None, sign_along=1.0, verbose=True):
     """Invert a Stokes stack with the sky-aware forward model and apply the
-    empirical slope anchor. Reused by run_epss (after extracting Stokes from
-    raw frames) and by Stokes-archive verification.
+    empirical slope anchor. Used by run_epss (after extracting Stokes from
+    raw frames) and callable directly on any Stokes stack.
 
     Args:
         S0, s1, s2 : Stokes stacks (T, Ny, Nx) (or single (Ny, Nx)) in the pss
@@ -636,7 +635,7 @@ def skyaware_slope_stack(S0, s1, s2, *, theta_v_deg, n_water=1.34,
             pipeline produces the reference amplitude.
         sign_along : multiply the along-look (Sy) seapol output by this (+1/-1)
             to match the present-pipeline sign convention; verify once per
-            geometry (see anchor docs).
+            geometry.
 
     Returns:
         (slope_x, slope_y, env, anchor) : the f-scaled cross/along slope stacks,

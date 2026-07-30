@@ -58,8 +58,8 @@ def test_empirical_lut_is_unbiased_in_same_physics_case():
 
 
 # ---------------------------------------------------------------------------
-# Data-backed regression on the committed Piermont 2025 dual-camera artifacts.
-# Skips offline if the small committed .nc files are not present.
+# Data-backed regression on the committed Piermont 2025 dual-camera data
+# products. Skips offline if the small committed .nc files are not present.
 # ---------------------------------------------------------------------------
 import numpy as np
 

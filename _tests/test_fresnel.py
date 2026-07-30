@@ -64,9 +64,9 @@ def test_dolp_to_aoi_clips_out_of_range():
 
 def test_load_lookup_table_vec_fallback_clamps_low_dolp(tmp_path):
     """A DOLP_vec/theta_vec .mat whose measured curve starts above DoLP=0 must
-    map low DoLP to the SMALL-angle end, not to the peak (regression: a single
-    nan fill sent near-flat water to Brewster's angle), and must tolerate
-    repeated DoLP samples before the peak."""
+    map low DoLP to the SMALL-angle end, not to the peak (a single nan fill
+    below the measured floor would send near-flat water to Brewster's angle),
+    and must tolerate repeated DoLP samples before the peak."""
     from scipy.io import savemat
 
     from pss.fresnel import load_lookup_table

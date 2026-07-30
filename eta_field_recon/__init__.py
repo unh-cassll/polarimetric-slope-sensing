@@ -31,7 +31,7 @@ Quick start:
         downsample=8,
     )
 
-See README.md for the method, gotchas, and ideas for extensions.
+See README.md for the method and its practical constraints.
 """
 
 from .recon import (reconstruct_eta_field, long_wave_gate,

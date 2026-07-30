@@ -31,7 +31,7 @@ for i = 1:3
         [~,S1,S2] = Compute_StokesVecs_by_Conv_Demodul(double(frame_raw),'4x4');
     end
 
-    S1 = S1*1.2185; %11/21/2023 Update: MULTIPLY BY GAIN obtained from polarimeter_cal_script.m
+    S1 = S1*1.2185; % Apply lab-measured polarimeter calibration gain
     S2 = S2*1.2197;
 
     figure(i);clf;

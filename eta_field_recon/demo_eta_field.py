@@ -134,8 +134,8 @@ def synth_slope_field(Lx, Ly, Nx, Ny, t, components,
 # Demo
 # ---------------------------------------------------------------------------
 def main():
-    # Grid: 3 m frame at 12 mm pixels = 256x256 (production: 6 mm, 512x512;
-    # we use 12 mm here so the demo runs in a reasonable time).
+    # Grid: 3 m frame at 12 mm pixels = 256x256 (a field system is typically
+    # 6 mm, 512x512; 12 mm keeps the demo runtime short).
     Nx = Ny = 256
     dx = 0.012
     Lx, Ly = Nx*dx, Ny*dx

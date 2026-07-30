@@ -68,7 +68,7 @@ def require_seapol() -> None:
 
 
 # ==========================================================================
-# Geometry helpers (ported from the Piermont full-set driver).
+# Geometry helpers: image row -> incidence angle for a tilted wide-FOV camera.
 # ==========================================================================
 def plane_normal_R(incidence_deg: float, row_sign: float = -1.0) -> np.ndarray:
     """Rotation whose 3rd column is the camera-facing water-plane normal.
@@ -142,7 +142,7 @@ def rolling_nanmedian(a: np.ndarray, w: int) -> np.ndarray:
 
 
 # ==========================================================================
-# seapol forward DoLP(theta) (ported from the Piermont sky-aware demo).
+# seapol forward DoLP(theta).
 # ==========================================================================
 def _reflected_components(theta_deg, sky, camera_heading_deg, n_water):
     """Reflected-sky intensity I and linear-polarized magnitude sqrt(Q^2+U^2)

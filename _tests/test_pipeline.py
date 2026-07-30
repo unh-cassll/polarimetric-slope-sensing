@@ -20,14 +20,14 @@ from pss.fresnel import fresnel_dolp
 
 def test_pipeline_runs_on_synthetic_frame(synthetic_frame):
     frame, truth = synthetic_frame
-    # Default is now native (half-resolution): one Stokes vector per super-pixel.
+    # Default is native (half-resolution): one Stokes vector per super-pixel.
     result = compute_slope_field(frame, gain_mode="none")
     H, W = truth["shape"]
     assert result.s1.shape == (H // 2, W // 2)
     assert np.isfinite(result.dolp).all()
     assert np.isfinite(result.aoi_deg).all()
     assert np.isfinite(result.mss)
-    # resolution="full" restores the interpolated full-resolution grid.
+    # resolution="full" gives the interpolated full-resolution grid.
     result_full = compute_slope_field(
         frame, resolution="full", method="bilinear", gain_mode="none"
     )
@@ -93,9 +93,9 @@ def test_native_resolution_all_gains_complete(synthetic_frame, gain):
 def test_slope_fields_preserve_mean_tilt(synthetic_frame):
     """Sx, Sy are NOT per-frame de-meaned: the spatial-mean slope (the
     swell-induced footprint tilt) must be preserved, since it is the signal
-    the long-wave inversion reconstructs. Per-frame de-meaning was a bug that
-    destroyed the swell; the constant camera tilt is instead removed once at
-    the record level downstream (eta_field_recon.recon).
+    the long-wave inversion reconstructs. Per-frame de-meaning would destroy
+    the swell; the constant camera tilt is instead removed once at the record
+    level downstream (eta_field_recon.recon).
     """
     frame, truth = synthetic_frame
     result = compute_slope_field(
